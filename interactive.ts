@@ -2,11 +2,12 @@ import * as p from "@clack/prompts";
 import { resolve, extname } from "path";
 import { statSync } from "fs";
 import { convertFile, type OutputFormat } from "./convert";
-import { resolveOutputPath, writeOutput } from "./output";
+import { writeOutput } from "./output";
+import { buildPlan, ValidationError } from "./validate";
 import { scanForFiles, formatHint, type FileInfo } from "./scan";
 
 export async function runInteractive() {
-  p.intro("convert-the-doc");
+  p.intro("con-the-doc");
 
   const filePath = await pickFile();
   if (!filePath) return;
@@ -137,19 +138,31 @@ async function pickFormat(filePath: string): Promise<OutputFormat | null> {
 
 async function convert(filePath: string, format: OutputFormat) {
   const s = p.spinner();
+
+  let plan;
+  try {
+    // Interactive mode always has explicit format (user picked it)
+    plan = buildPlan(filePath, format, { formatExplicit: true });
+  } catch (err: any) {
+    if (err instanceof ValidationError) {
+      p.log.error(err.message);
+      return;
+    }
+    throw err;
+  }
+
   s.start("Converting…");
 
   try {
-    const result = await convertFile(filePath, format);
-
-    if (result.outputPath) {
-      // Outbound: Pandoc already wrote the file
+    if (plan.direction === "outbound") {
+      const result = await convertFile(filePath, plan.format, {
+        pandocArgs: plan.pandocArgs,
+      });
       s.stop(`${result.sourcePath} → ${result.outputPath}`);
     } else {
-      // Inbound: we write the formatted text
-      const outPath = resolveOutputPath(filePath, format);
-      await writeOutput(outPath, result.formatted);
-      s.stop(`${result.sourcePath} → ${outPath}`);
+      const result = await convertFile(filePath, plan.format);
+      await writeOutput(plan.outputPath, result.formatted);
+      s.stop(`${result.sourcePath} → ${plan.outputPath}`);
     }
   } catch (err: any) {
     s.stop("Conversion failed.");

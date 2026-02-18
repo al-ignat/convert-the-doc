@@ -23,7 +23,9 @@ async function checkPandoc(): Promise<boolean> {
 
 export async function convertMarkdownTo(
   inputPath: string,
-  format: OutboundFormat
+  format: OutboundFormat,
+  outputDir?: string,
+  extraArgs?: string[]
 ): Promise<string> {
   if (!(await checkPandoc())) {
     throw new Error(
@@ -32,10 +34,11 @@ export async function convertMarkdownTo(
   }
 
   const name = basename(inputPath, extname(inputPath));
-  const dir = dirname(inputPath);
+  const dir = outputDir ?? dirname(inputPath);
   const outPath = join(dir, `${name}.${format}`);
 
-  const proc = Bun.spawn(["pandoc", inputPath, "-o", outPath], {
+  const args = ["pandoc", inputPath, ...(extraArgs ?? []), "-o", outPath];
+  const proc = Bun.spawn(args, {
     stdout: "pipe",
     stderr: "pipe",
   });

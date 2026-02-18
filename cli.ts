@@ -3,7 +3,8 @@
 import { resolve } from "path";
 import { statSync, mkdirSync } from "fs";
 import { convertFile, type OutputFormat } from "./convert";
-import { resolveOutputPath, writeOutput } from "./output";
+import { writeOutput } from "./output";
+import { buildPlan, ValidationError } from "./validate";
 import { runInteractive } from "./interactive";
 
 const VALID_FORMATS = new Set(["md", "json", "yaml", "docx", "pptx", "html"]);
@@ -14,6 +15,7 @@ function parseArgs(argv: string[]) {
   let input: string | null = null;
   let format: OutputFormat = "md";
   let output: string | null = null;
+  let formatExplicit = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -24,6 +26,7 @@ function parseArgs(argv: string[]) {
         process.exit(1);
       }
       format = val as OutputFormat;
+      formatExplicit = true;
     } else if (arg === "-o" || arg === "--output") {
       output = args[++i];
       if (!output) {
@@ -38,23 +41,23 @@ function parseArgs(argv: string[]) {
     }
   }
 
-  return { input, format, output };
+  return { input, format, output, formatExplicit };
 }
 
 function printHelp() {
   console.log(`
-convert-the-doc — Convert documents to LLM-friendly text
+con-the-doc — Convert documents to LLM-friendly text
 
 Usage:
-  convert-the-doc                          Interactive mode
-  convert-the-doc <file>                   Convert a file to .md
-  convert-the-doc <folder>                 Convert all files in folder
-  convert-the-doc <file> -f json -o ./out  Convert with options
+  con-the-doc                          Interactive mode
+  con-the-doc <file>                   Convert a file to .md
+  con-the-doc <folder>                 Convert all files in folder
+  con-the-doc <file> -f json -o ./out  Convert with options
 
   Outbound (Markdown → documents, requires Pandoc):
-  convert-the-doc notes.md -f docx         Convert .md to Word
-  convert-the-doc notes.md -f pptx         Convert .md to PowerPoint
-  convert-the-doc notes.md -f html         Convert .md to HTML
+  con-the-doc notes.md -f docx         Convert .md to Word
+  con-the-doc notes.md -f pptx         Convert .md to PowerPoint
+  con-the-doc notes.md -f html         Convert .md to HTML
 
 Options:
   -f, --format <fmt>   Output format (default: md)
@@ -66,7 +69,7 @@ Options:
 }
 
 async function main() {
-  const { input, format, output } = parseArgs(Bun.argv);
+  const { input, format, output, formatExplicit } = parseArgs(Bun.argv);
 
   if (!input) {
     await runInteractive();
@@ -88,9 +91,9 @@ async function main() {
   }
 
   if (stat.isFile()) {
-    await convertSingleFile(resolvedInput, format, outputDir);
+    await convertSingleFile(resolvedInput, format, outputDir, formatExplicit);
   } else if (stat.isDirectory()) {
-    await convertFolder(resolvedInput, format, outputDir);
+    await convertFolder(resolvedInput, format, outputDir, formatExplicit);
   } else {
     console.error(`Not a file or folder: ${input}`);
     process.exit(1);
@@ -100,19 +103,31 @@ async function main() {
 async function convertSingleFile(
   filePath: string,
   format: OutputFormat,
-  outputDir?: string
+  outputDir?: string,
+  formatExplicit?: boolean
 ) {
+  let plan;
   try {
-    const result = await convertFile(filePath, format);
+    plan = buildPlan(filePath, format, { outputDir, formatExplicit });
+  } catch (err: any) {
+    if (err instanceof ValidationError) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
 
-    if (result.outputPath) {
-      // Outbound: Pandoc already wrote the file
+  try {
+    if (plan.direction === "outbound") {
+      const result = await convertFile(filePath, plan.format, {
+        outputDir,
+        pandocArgs: plan.pandocArgs,
+      });
       console.log(`✓ ${filePath} → ${result.outputPath}`);
     } else {
-      // Inbound: write the formatted text
-      const outPath = resolveOutputPath(filePath, format, outputDir);
-      await writeOutput(outPath, result.formatted);
-      console.log(`✓ ${filePath} → ${outPath}`);
+      const result = await convertFile(filePath, plan.format);
+      await writeOutput(plan.outputPath, result.formatted);
+      console.log(`✓ ${filePath} → ${plan.outputPath}`);
     }
   } catch (err: any) {
     console.error(`✗ ${filePath}: ${err.message ?? err}`);
@@ -123,7 +138,8 @@ async function convertSingleFile(
 async function convertFolder(
   dir: string,
   format: OutputFormat,
-  outputDir?: string
+  outputDir?: string,
+  formatExplicit?: boolean
 ) {
   const { readdirSync } = await import("fs");
   const { join } = await import("path");
@@ -139,16 +155,31 @@ async function convertFolder(
 
   let ok = 0;
   let fail = 0;
+  let skipped = 0;
   for (const file of files) {
+    let plan;
     try {
-      const result = await convertFile(file, format);
+      plan = buildPlan(file, format, { outputDir, formatExplicit });
+    } catch (err: any) {
+      if (err instanceof ValidationError) {
+        console.log(`⊘ ${file}: ${err.message}`);
+        skipped++;
+        continue;
+      }
+      throw err;
+    }
 
-      if (result.outputPath) {
+    try {
+      if (plan.direction === "outbound") {
+        const result = await convertFile(file, plan.format, {
+          outputDir,
+          pandocArgs: plan.pandocArgs,
+        });
         console.log(`✓ ${file} → ${result.outputPath}`);
       } else {
-        const outPath = resolveOutputPath(file, format, outputDir);
-        await writeOutput(outPath, result.formatted);
-        console.log(`✓ ${file} → ${outPath}`);
+        const result = await convertFile(file, plan.format);
+        await writeOutput(plan.outputPath, result.formatted);
+        console.log(`✓ ${file} → ${plan.outputPath}`);
       }
       ok++;
     } catch (err: any) {
@@ -156,7 +187,10 @@ async function convertFolder(
       fail++;
     }
   }
-  console.log(`\nDone: ${ok} converted, ${fail} failed.`);
+
+  const parts = [`${ok} converted`, `${fail} failed`];
+  if (skipped > 0) parts.push(`${skipped} skipped`);
+  console.log(`\nDone: ${parts.join(", ")}.`);
 }
 
 main();

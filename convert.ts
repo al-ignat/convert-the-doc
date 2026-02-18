@@ -6,16 +6,17 @@ export type OutputFormat = "md" | "json" | "yaml" | "docx" | "pptx" | "html";
 
 const OUTBOUND_FORMATS = new Set<string>(["docx", "pptx", "html"]);
 
-export function isOutboundConversion(filePath: string, format: OutputFormat): boolean {
-  return extname(filePath).toLowerCase() === ".md" && OUTBOUND_FORMATS.has(format);
-}
-
 export interface ConversionResult {
   content: string;
   formatted: string;
   sourcePath: string;
   mimeType: string;
   outputPath?: string;
+}
+
+export interface ConvertOptions {
+  outputDir?: string;
+  pandocArgs?: string[];
 }
 
 interface ExtractionResult {
@@ -42,11 +43,18 @@ async function getExtractFile() {
 
 export async function convertFile(
   filePath: string,
-  format: OutputFormat
+  format: OutputFormat,
+  options?: ConvertOptions
 ): Promise<ConversionResult> {
   // Outbound: Markdown → DOCX/PPTX/HTML via Pandoc
-  if (isOutboundConversion(filePath, format)) {
-    const outPath = await convertMarkdownTo(filePath, format as OutboundFormat);
+  const isOutbound = extname(filePath).toLowerCase() === ".md" && OUTBOUND_FORMATS.has(format);
+  if (isOutbound) {
+    const outPath = await convertMarkdownTo(
+      filePath,
+      format as OutboundFormat,
+      options?.outputDir,
+      options?.pandocArgs
+    );
     return {
       content: "",
       formatted: "",
