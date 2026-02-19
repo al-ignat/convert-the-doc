@@ -15,7 +15,7 @@ export async function runPaste(options: PasteOptions): Promise<void> {
   const hasFlag = options.copy || options.stdout || options.output;
 
   if (!hasFlag) {
-    p.intro("con-the-doc paste");
+    p.intro("doc2llm paste");
   }
 
   // 1. Read clipboard

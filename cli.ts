@@ -108,30 +108,30 @@ function parseArgs(argv: string[]) {
 
 function printHelp() {
   console.log(`
-con-the-doc — Convert documents to LLM-friendly text
+doc2llm — Convert documents to LLM-friendly text
 
 Usage:
-  con-the-doc                          Interactive mode
-  con-the-doc <file>                   Convert a file to .md
-  con-the-doc <folder>                 Convert all files in folder
-  con-the-doc <file> -f json -o ./out  Convert with options
-  con-the-doc <file> -t report         Use a named template
+  doc2llm                          Interactive mode
+  doc2llm <file>                   Convert a file to .md
+  doc2llm <folder>                 Convert all files in folder
+  doc2llm <file> -f json -o ./out  Convert with options
+  doc2llm <file> -t report         Use a named template
 
   Outbound (Markdown → documents, requires Pandoc):
-  con-the-doc notes.md -f docx         Convert .md to Word
-  con-the-doc notes.md -f pptx         Convert .md to PowerPoint
-  con-the-doc notes.md -f html         Convert .md to HTML
+  doc2llm notes.md -f docx         Convert .md to Word
+  doc2llm notes.md -f pptx         Convert .md to PowerPoint
+  doc2llm notes.md -f html         Convert .md to HTML
 
   Clipboard:
-  con-the-doc paste                    Clipboard → Markdown (interactive)
-  con-the-doc paste --copy             Convert and copy back to clipboard
-  con-the-doc paste --stdout           Convert and print to terminal
-  con-the-doc paste -o <file>          Convert and save to file
+  doc2llm paste                    Clipboard → Markdown (interactive)
+  doc2llm paste --copy             Convert and copy back to clipboard
+  doc2llm paste --stdout           Convert and print to terminal
+  doc2llm paste -o <file>          Convert and save to file
 
   Config:
-  con-the-doc init                     Create local .con-the-doc.yaml
-  con-the-doc init --global            Create global config
-  con-the-doc config                   View and manage config
+  doc2llm init                     Create local .doc2llm.yaml
+  doc2llm init --global            Create global config
+  doc2llm config                   View and manage config
 
 Options:
   -f, --format <fmt>      Output format (default: md)
