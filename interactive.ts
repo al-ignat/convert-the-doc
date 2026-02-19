@@ -139,25 +139,20 @@ async function pickFormat(
 ): Promise<FormatChoice | null> {
   const isMarkdown = extname(filePath).toLowerCase() === ".md";
 
-  type OptionValue = string;
-  const options: { value: OptionValue; label: string; hint?: string }[] = isMarkdown
-    ? [
-        { value: "fmt:docx", label: "Word", hint: ".docx" },
-        { value: "fmt:pptx", label: "PowerPoint", hint: ".pptx" },
-        { value: "fmt:html", label: "HTML", hint: ".html" },
-        { value: "fmt:json", label: "JSON", hint: ".json" },
-        { value: "fmt:yaml", label: "YAML", hint: ".yaml" },
-      ]
-    : [
-        { value: "fmt:md", label: "Markdown", hint: ".md" },
-        { value: "fmt:json", label: "JSON", hint: ".json" },
-        { value: "fmt:yaml", label: "YAML", hint: ".yaml" },
-      ];
+  // Inbound: skip format picker entirely, always produce markdown
+  if (!isMarkdown) {
+    return { kind: "format", format: "md" };
+  }
 
-  // Add templates from config
+  // Outbound: templates first (if any), then raw formats
   const templates = config?.templates;
-  if (templates && Object.keys(templates).length > 0) {
-    options.push({ value: "__sep__", label: "── Templates ──", hint: "" });
+  const hasTemplates = templates && Object.keys(templates).length > 0;
+
+  type OptionValue = string;
+  const options: { value: OptionValue; label: string; hint?: string }[] = [];
+
+  if (hasTemplates) {
+    options.push({ value: "__sep_tpl__", label: "── Templates ──", hint: "" });
     for (const [name, tpl] of Object.entries(templates)) {
       options.push({
         value: `tpl:${name}`,
@@ -165,7 +160,14 @@ async function pickFormat(
         hint: tpl.description ?? `.${tpl.format}`,
       });
     }
+    options.push({ value: "__sep_fmt__", label: "── Formats ──", hint: "" });
   }
+
+  options.push(
+    { value: "fmt:docx", label: "Word", hint: ".docx" },
+    { value: "fmt:pptx", label: "PowerPoint", hint: ".pptx" },
+    { value: "fmt:html", label: "HTML", hint: ".html" },
+  );
 
   const picked = await p.select({
     message: "Output format:",
@@ -177,7 +179,7 @@ async function pickFormat(
     return null;
   }
 
-  if (picked === "__sep__") {
+  if (picked === "__sep_tpl__" || picked === "__sep_fmt__") {
     return await pickFormat(filePath, config);
   }
 

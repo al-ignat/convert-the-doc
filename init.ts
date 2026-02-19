@@ -41,7 +41,6 @@ export async function runInit(isGlobal: boolean) {
       const defaults = await promptDefaults(existing);
       if (!defaults) return;
       existing.defaults = defaults.defaults;
-      if (defaults.pandoc) existing.pandoc = { ...existing.pandoc, ...defaults.pandoc };
       await saveConfig(targetPath, existing);
       return;
     }
@@ -55,7 +54,6 @@ export async function runInit(isGlobal: boolean) {
 
   const config: Config = {
     defaults: defaults.defaults,
-    ...(defaults.pandoc ? { pandoc: defaults.pandoc } : {}),
   };
 
   const wantTemplate = await p.confirm({
@@ -76,7 +74,6 @@ export async function runInit(isGlobal: boolean) {
 
 async function promptDefaults(existing?: Config): Promise<{
   defaults: Config["defaults"];
-  pandoc?: Config["pandoc"];
 } | null> {
   const format = await p.select<OutputFormat>({
     message: "Default output format for Markdown files:",
@@ -108,20 +105,12 @@ async function promptDefaults(existing?: Config): Promise<{
     outputDir = dir;
   }
 
-  const addToc = await p.confirm({
-    message: "Add table of contents by default?",
-    initialValue: false,
-  });
-  if (p.isCancel(addToc)) { p.cancel("Cancelled."); return null; }
-
   const defaults: Config["defaults"] = {
     format,
     ...(outputDir ? { outputDir } : {}),
   };
 
-  const pandoc = addToc ? { [format]: ["--toc"] } : undefined;
-
-  return { defaults, pandoc };
+  return { defaults };
 }
 
 async function promptTemplateLoop(
@@ -181,16 +170,8 @@ async function promptTemplate(
   });
   if (p.isCancel(desc)) return null;
 
-  const pandocInput = await p.text({
-    message: "Pandoc args (space-separated, optional):",
-    placeholder: "--toc --reference-doc=./template.docx",
-  });
-  if (p.isCancel(pandocInput)) return null;
-
-  const pandocArgs = pandocInput
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
+  const pandocArgs = await promptTemplateFeatures(format);
+  if (pandocArgs === null) return null;
 
   return {
     name,
@@ -200,6 +181,87 @@ async function promptTemplate(
       ...(desc.trim() ? { description: desc.trim() } : {}),
     },
   };
+}
+
+async function promptTemplateFeatures(format: OutputFormat): Promise<string[] | null> {
+  type FeatureOption = { value: string; label: string };
+
+  const featureOptions: FeatureOption[] = [];
+
+  if (format === "docx") {
+    featureOptions.push(
+      { value: "toc", label: "Table of contents" },
+      { value: "reference-doc", label: "Use a reference document (company .docx template)" },
+    );
+  } else if (format === "pptx") {
+    featureOptions.push(
+      { value: "reference-doc", label: "Use a reference document (company .pptx template)" },
+    );
+  } else if (format === "html") {
+    featureOptions.push(
+      { value: "standalone", label: "Standalone HTML (full page with head/body)" },
+      { value: "toc", label: "Table of contents" },
+      { value: "css", label: "Use a custom CSS stylesheet" },
+    );
+  }
+
+  const pandocArgs: string[] = [];
+
+  if (featureOptions.length > 0) {
+    const features = await p.multiselect<FeatureOption[], string>({
+      message: "What should this template include?",
+      options: featureOptions,
+      required: false,
+    });
+    if (p.isCancel(features)) { p.cancel("Cancelled."); return null; }
+
+    for (const feat of features) {
+      if (feat === "toc") {
+        pandocArgs.push("--toc");
+      } else if (feat === "standalone") {
+        pandocArgs.push("--standalone");
+      } else if (feat === "reference-doc") {
+        const refPath = await p.text({
+          message: "Path to reference document:",
+          placeholder: `./template.${format}`,
+          validate: (val) => {
+            if (!val.trim()) return "Path is required.";
+          },
+        });
+        if (p.isCancel(refPath)) { p.cancel("Cancelled."); return null; }
+        pandocArgs.push(`--reference-doc=${refPath.trim()}`);
+      } else if (feat === "css") {
+        const cssPath = await p.text({
+          message: "Path to CSS stylesheet:",
+          placeholder: "./style.css",
+          validate: (val) => {
+            if (!val.trim()) return "Path is required.";
+          },
+        });
+        if (p.isCancel(cssPath)) { p.cancel("Cancelled."); return null; }
+        pandocArgs.push(`--css=${cssPath.trim()}`);
+      }
+    }
+  }
+
+  // Advanced escape hatch
+  const wantAdvanced = await p.confirm({
+    message: "Advanced: additional Pandoc args?",
+    initialValue: false,
+  });
+  if (p.isCancel(wantAdvanced)) { p.cancel("Cancelled."); return null; }
+
+  if (wantAdvanced) {
+    const extra = await p.text({
+      message: "Pandoc args (space-separated):",
+      placeholder: "--shift-heading-level-by=-1",
+    });
+    if (p.isCancel(extra)) { p.cancel("Cancelled."); return null; }
+    const extraArgs = extra.trim().split(/\s+/).filter(Boolean);
+    pandocArgs.push(...extraArgs);
+  }
+
+  return pandocArgs;
 }
 
 async function saveConfig(targetPath: string, config: Config) {

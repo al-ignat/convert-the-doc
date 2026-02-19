@@ -109,7 +109,7 @@ Usage:
   Config:
   con-the-doc init                     Create local .con-the-doc.yaml
   con-the-doc init --global            Create global config
-  con-the-doc config                   View config and manage templates
+  con-the-doc config                   View and manage config
 
 Options:
   -f, --format <fmt>      Output format (default: md)
@@ -133,7 +133,7 @@ async function main() {
     return;
   }
   if (command === "config") {
-    await runConfigWizard(isGlobal);
+    await runConfigWizard();
     return;
   }
 
