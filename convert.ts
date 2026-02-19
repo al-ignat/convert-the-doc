@@ -66,7 +66,7 @@ export async function convertFile(
 
   // Inbound: documents → text via Kreuzberg
   const extract = await getExtractFile();
-  const result = await extract(filePath);
+  const result = await extract(filePath, null, { outputFormat: "markdown" });
 
   const textContent = result.content;
   const formatted = formatOutput(textContent, filePath, result.mimeType, result.metadata, format);
