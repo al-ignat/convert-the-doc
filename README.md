@@ -23,6 +23,12 @@ bunx con-the-doc ./docs/ -f yaml
 bunx con-the-doc notes.md -f docx
 bunx con-the-doc notes.md -f pptx
 bunx con-the-doc notes.md -f html
+
+# Use a named template from config
+bunx con-the-doc notes.md -t report
+
+# Pass extra args to Pandoc
+bunx con-the-doc notes.md -f docx -- --toc --reference-doc=template.docx
 ```
 
 ## Install
@@ -49,13 +55,19 @@ con-the-doc <file>                   Convert a file to .md
 con-the-doc <folder>                 Convert all files in folder
 con-the-doc <file> -f json -o ./out  Convert with options
 con-the-doc notes.md -f docx         Markdown → Word (outbound)
+con-the-doc notes.md -t report       Use a named template
+con-the-doc init                     Create local config
+con-the-doc init --global            Create global config
 
 Options:
-  -f, --format <fmt>   Output format (default: md)
-                        Inbound:  md, json, yaml
-                        Outbound: docx, pptx, html (requires Pandoc)
-  -o, --output <path>  Output directory
-  -h, --help           Show this help
+  -f, --format <fmt>      Output format (default: md)
+                            Inbound:  md, json, yaml
+                            Outbound: docx, pptx, html (requires Pandoc)
+  -t, --template <name>   Use a named template from config
+  -o, --output <path>     Output directory
+  -y, --force             Overwrite output files without prompting
+  --                      Pass remaining args to Pandoc (outbound only)
+  -h, --help              Show this help
 ```
 
 ## Interactive Mode
@@ -103,6 +115,52 @@ When the input is a `.md` file, you can convert it to:
 - **HTML** — standalone HTML page via Pandoc
 
 Requires [Pandoc](https://pandoc.org) installed (`brew install pandoc`).
+
+## Config
+
+Create a config file to set defaults, per-format Pandoc args, and named templates. Run the init wizard:
+
+```bash
+con-the-doc init            # creates .con-the-doc.yaml in current directory
+con-the-doc init --global   # creates ~/.config/con-the-doc/config.yaml
+```
+
+Local config overrides global (field-by-field merge). Example `.con-the-doc.yaml`:
+
+```yaml
+defaults:
+  format: docx        # default format for .md smart default
+  outputDir: ./out    # null = same dir as input
+  force: false        # skip overwrite prompts
+
+pandoc:               # per-format pandoc args
+  html:
+    - --toc
+  docx:
+    - --reference-doc=./templates/report.docx
+
+templates:
+  report:
+    format: docx
+    pandocArgs:
+      - --reference-doc=./templates/report.docx
+      - --toc
+    description: Company report with TOC
+  slides:
+    format: pptx
+    pandocArgs:
+      - --slide-level=2
+    description: Presentation slides
+```
+
+Use a template with `-t`:
+
+```bash
+con-the-doc notes.md -t report    # uses template's format + pandoc args
+con-the-doc notes.md -t report -f html  # explicit -f overrides template format
+```
+
+Templates also appear in the interactive mode format picker.
 
 ## Supported Formats
 
