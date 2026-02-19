@@ -11,29 +11,77 @@ import {
 } from "./config";
 import { promptDefaults, promptTemplateLoop, saveConfig } from "./init";
 
-export async function runConfigWizard(isGlobal: boolean) {
+async function pickConfigTarget(): Promise<string | null> {
+  const globalExists = existsSync(GLOBAL_CONFIG_PATH);
+  const localPath = findLocalConfig();
+
+  // Pre-select: local if it exists, else global if it exists, else local
+  const defaultValue = localPath ? "local" : globalExists ? "global" : "local";
+
+  const target = await p.select<string>({
+    message: "Which config to edit?",
+    initialValue: defaultValue,
+    options: [
+      { value: "local" as string, label: "Local", hint: LOCAL_CONFIG_NAME },
+      { value: "global" as string, label: "Global", hint: GLOBAL_CONFIG_PATH.replace(homedir(), "~") },
+    ],
+  });
+  if (p.isCancel(target)) { p.cancel("Cancelled."); return null; }
+
+  return target === "global" ? GLOBAL_CONFIG_PATH : (localPath ?? LOCAL_CONFIG_NAME);
+}
+
+export async function runConfigWizard() {
   p.intro("con-the-doc config");
 
   const globalExists = existsSync(GLOBAL_CONFIG_PATH);
   const localPath = findLocalConfig();
   const config = loadConfig();
 
+  // No config found → offer inline creation
+  if (!globalExists && !localPath) {
+    p.log.warn("No config files found.");
+
+    const create = await p.confirm({
+      message: "Create one now?",
+      initialValue: true,
+    });
+    if (p.isCancel(create) || !create) { p.outro(""); return; }
+
+    const targetPath = await pickConfigTarget();
+    if (!targetPath) return;
+
+    const defaults = await promptDefaults();
+    if (!defaults) return;
+
+    const newConfig: Config = { defaults: defaults.defaults };
+
+    const wantTemplate = await p.confirm({
+      message: "Create a named template?",
+      initialValue: false,
+    });
+    if (p.isCancel(wantTemplate)) { p.cancel("Cancelled."); return; }
+
+    if (wantTemplate) {
+      const templates = await promptTemplateLoop();
+      if (templates) newConfig.templates = templates;
+    }
+
+    await saveConfig(targetPath, newConfig);
+    return;
+  }
+
   // Show config sources
   const sources: string[] = [];
   if (globalExists) sources.push(`Global: ${GLOBAL_CONFIG_PATH.replace(homedir(), "~")}`);
   if (localPath) sources.push(`Local:  ${localPath}`);
-  if (!sources.length) {
-    p.log.warn("No config files found. Run con-the-doc init to create one.");
-    p.outro("");
-    return;
-  }
   p.log.info(sources.join("\n"));
 
   // Show active config summary
   const summary: string[] = [];
   if (config.defaults?.format) summary.push(`Default format: ${config.defaults.format}`);
   if (config.defaults?.outputDir) summary.push(`Output dir: ${config.defaults.outputDir}`);
-  summary.push(`Force: ${config.defaults?.force ? "yes" : "no"}`);
+  summary.push(`Overwrite existing files: ${config.defaults?.force ? "always" : "ask first"}`);
 
   const templateNames = Object.keys(config.templates ?? {});
   if (templateNames.length > 0) {
@@ -47,10 +95,9 @@ export async function runConfigWizard(isGlobal: boolean) {
   }
   p.log.info(summary.join("\n"));
 
-  // Determine which config to edit
-  const targetPath = isGlobal
-    ? GLOBAL_CONFIG_PATH
-    : localPath ?? LOCAL_CONFIG_NAME;
+  // Ask which config to edit
+  const targetPath = await pickConfigTarget();
+  if (!targetPath) return;
 
   const existing = existsSync(targetPath) ? parseConfigFile(targetPath) : {};
 
@@ -89,7 +136,6 @@ export async function runConfigWizard(isGlobal: boolean) {
     const defaults = await promptDefaults(existing);
     if (!defaults) { p.outro(""); return; }
     existing.defaults = defaults.defaults;
-    if (defaults.pandoc) existing.pandoc = { ...existing.pandoc, ...defaults.pandoc };
     await saveConfig(targetPath, existing);
     return;
   }
