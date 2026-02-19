@@ -1,10 +1,10 @@
-# con-the-doc — Wizard Wireframes
+# doc2llm — Wizard Wireframes
 
-All interactive flows as currently implemented. Entry points: `con-the-doc`, `con-the-doc init`, `con-the-doc config`.
+All interactive flows as currently implemented. Entry points: `doc2llm`, `doc2llm init`, `doc2llm config`.
 
 ---
 
-## 1. Launch Wizard (`con-the-doc`)
+## 1. Launch Wizard (`doc2llm`)
 
 The main conversion flow. Entry: `interactive.ts → runInteractive()`.
 
@@ -13,7 +13,7 @@ The main conversion flow. Entry: `interactive.ts → runInteractive()`.
 Scans cwd (up to 5 files) and ~/Downloads (up to 3 files, last 24h only).
 
 ```
-┌  con-the-doc
+┌  doc2llm
 │
 ◆  Pick a file to convert:
 │  ● report.docx              3 min ago · ./
@@ -26,7 +26,7 @@ Scans cwd (up to 5 files) and ~/Downloads (up to 3 files, last 24h only).
 If both cwd and downloads are empty:
 
 ```
-┌  con-the-doc
+┌  doc2llm
 │
 ▲  No convertible files found in current folder or ~/Downloads.
 │
@@ -111,10 +111,10 @@ Then:
 
 ### Step 5: First-run hint (conditional)
 
-Only shown when **no config file exists** (neither local `.con-the-doc.yaml` nor global `~/.config/con-the-doc/config.yaml`).
+Only shown when **no config file exists** (neither local `.doc2llm.yaml` nor global `~/.config/doc2llm/config.yaml`).
 
 ```
-ℹ  Tip: run con-the-doc init to save your preferences.
+ℹ  Tip: run doc2llm init to save your preferences.
 │
 └  Done!
 ```
@@ -127,17 +127,17 @@ With config present, just:
 
 ---
 
-## 2. Init Wizard (`con-the-doc init`)
+## 2. Init Wizard (`doc2llm init`)
 
 Creates or updates config. Entry: `init.ts → runInit()`.
-Use `--global` for `~/.config/con-the-doc/config.yaml`, otherwise `.con-the-doc.yaml`.
+Use `--global` for `~/.config/doc2llm/config.yaml`, otherwise `.doc2llm.yaml`.
 
 ### Branch A: Config already exists
 
 ```
-┌  con-the-doc init
+┌  doc2llm init
 │
-◆  Config found at .con-the-doc.yaml. What would you like to do?
+◆  Config found at .doc2llm.yaml. What would you like to do?
 │  ● Add a template
 │  ○ Edit defaults
 │  ○ Start fresh (overwrite)
@@ -154,7 +154,7 @@ Use `--global` for `~/.config/con-the-doc/config.yaml`, otherwise `.con-the-doc.
 #### Defaults wizard
 
 ```
-┌  con-the-doc init
+┌  doc2llm init
 │
 ◆  Default output format for Markdown files:
 │  ● Word        .docx
@@ -185,12 +185,12 @@ If yes → [Template creation loop](#template-creation-loop)
 #### Save
 
 ```
-ℹ  Config to write to .con-the-doc.yaml:
+ℹ  Config to write to .doc2llm.yaml:
 │  defaults:
 │    format: docx
 │
 │
-└  Config saved to .con-the-doc.yaml
+└  Config saved to .doc2llm.yaml
 ```
 
 ---
@@ -275,14 +275,14 @@ If yes → loops back to "Template name:". Duplicate names are rejected inline.
 
 ---
 
-## 3. Config Wizard (`con-the-doc config`)
+## 3. Config Wizard (`doc2llm config`)
 
 View and manage config. Entry: `config-wizard.ts → runConfigWizard()`.
 
 ### No config found
 
 ```
-┌  con-the-doc config
+┌  doc2llm config
 │
 ▲  No config files found.
 │
@@ -294,8 +294,8 @@ If yes:
 
 ```
 ◆  Which config to edit?
-│  ● Local   .con-the-doc.yaml
-│  ○ Global  ~/.config/con-the-doc/config.yaml
+│  ● Local   .doc2llm.yaml
+│  ○ Global  ~/.config/doc2llm/config.yaml
 ```
 
 Then runs the full [Defaults wizard](#defaults-wizard) + [Template creation loop](#template-creation-loop) inline, same as `init`.
@@ -303,10 +303,10 @@ Then runs the full [Defaults wizard](#defaults-wizard) + [Template creation loop
 ### Config exists
 
 ```
-┌  con-the-doc config
+┌  doc2llm config
 │
-ℹ  Global: ~/.config/con-the-doc/config.yaml
-│  Local:  ./.con-the-doc.yaml
+ℹ  Global: ~/.config/doc2llm/config.yaml
+│  Local:  ./.doc2llm.yaml
 
 ℹ  Default format: docx
 │  Output dir: ./out
@@ -317,8 +317,8 @@ Then runs the full [Defaults wizard](#defaults-wizard) + [Template creation loop
 │    slides — Presentation slides (pptx)
 │
 ◆  Which config to edit?
-│  ● Local   .con-the-doc.yaml
-│  ○ Global  ~/.config/con-the-doc/config.yaml
+│  ● Local   .doc2llm.yaml
+│  ○ Global  ~/.config/doc2llm/config.yaml
 │
 ◆  What would you like to do?
 │  ● Add a template
@@ -334,23 +334,23 @@ Then runs the full [Defaults wizard](#defaults-wizard) + [Template creation loop
 **"Open config file"**:
 
 ```
-ℹ  Config file: .con-the-doc.yaml
+ℹ  Config file: .doc2llm.yaml
 │
-└  Open it with your editor: $EDITOR ~/.con-the-doc.yaml
+└  Open it with your editor: $EDITOR ~/.doc2llm.yaml
 ```
 
 **"Done"** → exits
 
 ---
 
-## 4. Paste Wizard (`con-the-doc paste`)
+## 4. Paste Wizard (`doc2llm paste`)
 
 Clipboard → Markdown conversion. Entry: `paste.ts → runPaste()`.
 
 ### Interactive mode (no flags)
 
 ```
-┌  con-the-doc paste
+┌  doc2llm paste
 │
 ◇  Clipboard → Markdown
 │
@@ -374,7 +374,7 @@ If "Save to file…":
 Plain text fallback (no HTML in clipboard):
 
 ```
-┌  con-the-doc paste
+┌  doc2llm paste
 │
 ℹ  No HTML in clipboard — using plain text as-is.
 │
@@ -385,7 +385,7 @@ Plain text fallback (no HTML in clipboard):
 Empty clipboard:
 
 ```
-┌  con-the-doc paste
+┌  doc2llm paste
 │
 ✗  Clipboard is empty.
 ```
@@ -393,13 +393,13 @@ Empty clipboard:
 ### CLI mode (with flags)
 
 ```
-$ con-the-doc paste --copy
+$ doc2llm paste --copy
 ✓ Copied to clipboard
 
-$ con-the-doc paste --stdout
+$ doc2llm paste --stdout
 # Markdown output printed to terminal…
 
-$ con-the-doc paste -o snippet.md
+$ doc2llm paste -o snippet.md
 ✓ Saved to /path/to/snippet.md
 ```
 
@@ -410,16 +410,16 @@ $ con-the-doc paste -o snippet.md
 No wizard — direct conversion via flags. Entry: `cli.ts → main()`.
 
 ```
-$ con-the-doc report.docx
+$ doc2llm report.docx
 ✓ report.docx → report.md
 
-$ con-the-doc report.docx -f json -o ./out
+$ doc2llm report.docx -f json -o ./out
 ✓ report.docx → ./out/report.json
 
-$ con-the-doc notes.md -t report
+$ doc2llm notes.md -t report
 ✓ notes.md → notes.docx
 
-$ con-the-doc ./docs/
+$ doc2llm ./docs/
 ✓ docs/a.docx → docs/a.md
 ✗ docs/b.pdf: extraction failed
 ⊘ docs/c.md: Output would overwrite input file.
