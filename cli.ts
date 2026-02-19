@@ -7,6 +7,13 @@ import { convertFile, type OutputFormat } from "./convert";
 import { writeOutput } from "./output";
 import { buildPlan, ValidationError } from "./validate";
 import { runInteractive } from "./interactive";
+import {
+  loadConfig,
+  resolveTemplate,
+  buildPandocArgs,
+  type Config,
+} from "./config";
+import { runInit } from "./init";
 
 function confirm(prompt: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -29,6 +36,18 @@ function parseArgs(argv: string[]) {
   let formatExplicit = false;
   let force = false;
   let pandocArgs: string[] = [];
+  let command: string | null = null;
+  let template: string | null = null;
+  let isGlobal = false;
+
+  // Check for subcommand as first positional arg
+  if (args.length > 0 && args[0] === "init") {
+    command = "init";
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--global") isGlobal = true;
+    }
+    return { input, format, output, formatExplicit, force, pandocArgs, command, template, isGlobal };
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -37,6 +56,14 @@ function parseArgs(argv: string[]) {
       break;
     } else if (arg === "--force" || arg === "-y") {
       force = true;
+    } else if (arg === "--global") {
+      isGlobal = true;
+    } else if (arg === "-t" || arg === "--template") {
+      template = args[++i];
+      if (!template) {
+        console.error("Missing template name.");
+        process.exit(1);
+      }
     } else if (arg === "-f" || arg === "--format") {
       const val = args[++i];
       if (!val || !VALID_FORMATS.has(val)) {
@@ -59,7 +86,7 @@ function parseArgs(argv: string[]) {
     }
   }
 
-  return { input, format, output, formatExplicit, force, pandocArgs };
+  return { input, format, output, formatExplicit, force, pandocArgs, command, template, isGlobal };
 }
 
 function printHelp() {
@@ -71,28 +98,71 @@ Usage:
   con-the-doc <file>                   Convert a file to .md
   con-the-doc <folder>                 Convert all files in folder
   con-the-doc <file> -f json -o ./out  Convert with options
+  con-the-doc <file> -t report         Use a named template
 
   Outbound (Markdown → documents, requires Pandoc):
   con-the-doc notes.md -f docx         Convert .md to Word
   con-the-doc notes.md -f pptx         Convert .md to PowerPoint
   con-the-doc notes.md -f html         Convert .md to HTML
 
+  Config:
+  con-the-doc init                     Create local .con-the-doc.yaml
+  con-the-doc init --global            Create global config
+
 Options:
-  -f, --format <fmt>   Output format (default: md)
-                        Inbound:  md, json, yaml
-                        Outbound: docx, pptx, html (requires Pandoc)
-  -o, --output <path>  Output directory
-  -y, --force          Overwrite output files without prompting
-  --                   Pass remaining args to Pandoc (outbound only)
-  -h, --help           Show this help
+  -f, --format <fmt>      Output format (default: md)
+                            Inbound:  md, json, yaml
+                            Outbound: docx, pptx, html (requires Pandoc)
+  -t, --template <name>   Use a named template from config
+  -o, --output <path>     Output directory
+  -y, --force             Overwrite output files without prompting
+  --                      Pass remaining args to Pandoc (outbound only)
+  -h, --help              Show this help
 `);
 }
 
 async function main() {
-  const { input, format, output, formatExplicit, force, pandocArgs } = parseArgs(Bun.argv);
+  const { input, format, output, formatExplicit, force, pandocArgs, command, template, isGlobal } =
+    parseArgs(Bun.argv);
+
+  // Handle init subcommand
+  if (command === "init") {
+    await runInit(isGlobal);
+    return;
+  }
+
+  // Load config
+  const config = loadConfig();
+
+  // Apply config defaults
+  const effectiveForce = force || config.defaults?.force || false;
+
+  // Resolve format: explicit -f > template format > config default > "md" (validate handles smart default)
+  let effectiveFormat = format;
+  let effectiveFormatExplicit = formatExplicit;
+
+  if (template) {
+    try {
+      const tpl = resolveTemplate(config, template);
+      if (!formatExplicit) {
+        effectiveFormat = tpl.format;
+        effectiveFormatExplicit = true;
+      }
+    } catch (err: any) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  // Resolve output dir: explicit -o > config default
+  const effectiveOutputDir = output
+    ? resolve(output)
+    : config.defaults?.outputDir
+      ? resolve(config.defaults.outputDir)
+      : undefined;
 
   if (!input) {
-    await runInteractive();
+    await runInteractive(config);
     return;
   }
 
@@ -105,15 +175,20 @@ async function main() {
     process.exit(1);
   }
 
-  const outputDir = output ? resolve(output) : undefined;
-  if (outputDir) {
-    mkdirSync(outputDir, { recursive: true });
+  if (effectiveOutputDir) {
+    mkdirSync(effectiveOutputDir, { recursive: true });
   }
 
   if (stat.isFile()) {
-    await convertSingleFile(resolvedInput, format, outputDir, formatExplicit, force, pandocArgs);
+    await convertSingleFile(
+      resolvedInput, effectiveFormat, effectiveOutputDir,
+      effectiveFormatExplicit, effectiveForce, pandocArgs, config, template
+    );
   } else if (stat.isDirectory()) {
-    await convertFolder(resolvedInput, format, outputDir, formatExplicit, force, pandocArgs);
+    await convertFolder(
+      resolvedInput, effectiveFormat, effectiveOutputDir,
+      effectiveFormatExplicit, effectiveForce, pandocArgs, config, template
+    );
   } else {
     console.error(`Not a file or folder: ${input}`);
     process.exit(1);
@@ -126,11 +201,17 @@ async function convertSingleFile(
   outputDir?: string,
   formatExplicit?: boolean,
   force?: boolean,
-  pandocArgs?: string[]
+  cliPandocArgs?: string[],
+  config?: Config,
+  templateName?: string | null
 ) {
   let plan;
   try {
-    plan = buildPlan(filePath, format, { outputDir, formatExplicit, pandocArgs });
+    plan = buildPlan(filePath, format, {
+      outputDir,
+      formatExplicit,
+      defaultMdFormat: config?.defaults?.format,
+    });
   } catch (err: any) {
     if (err instanceof ValidationError) {
       console.error(`✗ ${err.message}`);
@@ -139,7 +220,13 @@ async function convertSingleFile(
     throw err;
   }
 
-  if (pandocArgs?.length && plan.direction === "inbound") {
+  // Resolve pandoc args through config for outbound
+  if (plan.direction === "outbound" && config) {
+    plan.pandocArgs = buildPandocArgs(
+      plan.format, config, templateName ?? undefined, cliPandocArgs
+    );
+    if (!plan.pandocArgs.length) plan.pandocArgs = undefined;
+  } else if (cliPandocArgs?.length && plan.direction === "inbound") {
     console.log(`⚠ Pandoc args ignored for inbound conversion (${filePath})`);
   }
 
@@ -172,7 +259,9 @@ async function convertFolder(
   outputDir?: string,
   formatExplicit?: boolean,
   force?: boolean,
-  pandocArgs?: string[]
+  cliPandocArgs?: string[],
+  config?: Config,
+  templateName?: string | null
 ) {
   const { readdirSync } = await import("fs");
   const { join, basename } = await import("path");
@@ -186,11 +275,14 @@ async function convertFolder(
     return;
   }
 
-  if (pandocArgs?.length) {
-    // Check if any file would be inbound — warn once
+  if (cliPandocArgs?.length) {
     const hasInbound = files.some((f) => {
       try {
-        return buildPlan(f, format, { outputDir, formatExplicit, pandocArgs }).direction === "inbound";
+        return buildPlan(f, format, {
+          outputDir,
+          formatExplicit,
+          defaultMdFormat: config?.defaults?.format,
+        }).direction === "inbound";
       } catch { return false; }
     });
     if (hasInbound) {
@@ -198,16 +290,19 @@ async function convertFolder(
     }
   }
 
-  // Collect files that would be overwritten
   if (!force) {
     const overwrites: string[] = [];
     for (const file of files) {
       try {
-        const plan = buildPlan(file, format, { outputDir, formatExplicit, pandocArgs });
+        const plan = buildPlan(file, format, {
+          outputDir,
+          formatExplicit,
+          defaultMdFormat: config?.defaults?.format,
+        });
         if (existsSync(plan.outputPath)) {
           overwrites.push(basename(plan.outputPath));
         }
-      } catch { /* skip — will be handled during conversion */ }
+      } catch { /* skip */ }
     }
     if (overwrites.length > 0) {
       console.log(`${overwrites.length} file(s) would be overwritten:\n  ${overwrites.join(", ")}`);
@@ -222,7 +317,11 @@ async function convertFolder(
   for (const file of files) {
     let plan;
     try {
-      plan = buildPlan(file, format, { outputDir, formatExplicit, pandocArgs });
+      plan = buildPlan(file, format, {
+        outputDir,
+        formatExplicit,
+        defaultMdFormat: config?.defaults?.format,
+      });
     } catch (err: any) {
       if (err instanceof ValidationError) {
         console.log(`⊘ ${file}: ${err.message}`);
@@ -230,6 +329,14 @@ async function convertFolder(
         continue;
       }
       throw err;
+    }
+
+    // Resolve pandoc args for outbound
+    if (plan.direction === "outbound" && config) {
+      plan.pandocArgs = buildPandocArgs(
+        plan.format, config, templateName ?? undefined, cliPandocArgs
+      );
+      if (!plan.pandocArgs.length) plan.pandocArgs = undefined;
     }
 
     try {

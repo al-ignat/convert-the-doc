@@ -24,15 +24,20 @@ export class ValidationError extends Error {
 export function buildPlan(
   inputPath: string,
   format: OutputFormat,
-  options?: { outputDir?: string; formatExplicit?: boolean; pandocArgs?: string[] }
+  options?: {
+    outputDir?: string;
+    formatExplicit?: boolean;
+    pandocArgs?: string[];
+    defaultMdFormat?: OutputFormat;
+  }
 ): ConversionPlan {
   const ext = extname(inputPath).toLowerCase();
   const isMarkdownInput = ext === ".md";
   const isOutboundFormat = OUTBOUND_FORMATS.has(format);
 
-  // Smart default: .md input with no explicit -f → docx
+  // Smart default: .md input with no explicit -f → config default or docx
   if (isMarkdownInput && !options?.formatExplicit && format === "md") {
-    format = "docx";
+    format = options?.defaultMdFormat ?? "docx";
   }
 
   // Re-check after smart default
@@ -56,17 +61,11 @@ export function buildPlan(
     );
   }
 
-  // Pandoc flags
-  const pandocArgs: string[] = [...(options?.pandocArgs ?? [])];
-  if (direction === "outbound" && format === "html") {
-    pandocArgs.push("--standalone");
-  }
-
   return {
     direction,
     inputPath,
     outputPath,
     format,
-    pandocArgs: pandocArgs.length > 0 ? pandocArgs : undefined,
+    pandocArgs: options?.pandocArgs?.length ? options.pandocArgs : undefined,
   };
 }
