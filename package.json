@@ -7,6 +7,7 @@
     "type": "git",
     "url": "https://github.com/al-ignat/doc2llm.git"
   },
+  "files": ["*.ts", "README.md", "LICENSE"],
   "bin": {
     "doc2llm": "cli.ts"
   },
