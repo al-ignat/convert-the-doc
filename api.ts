@@ -230,12 +230,13 @@ async function handleConvertOutbound(req: Request): Promise<Response> {
     outPath = await convertMarkdownTo(tmpIn, outFormat, tmpdir(), pandocArgs);
 
     const outBytes = await Bun.file(outPath).arrayBuffer();
-    const baseName = file.name.replace(/\.[^.]+$/, "") || "output";
+    const rawName = file.name.replace(/\.[^.]+$/, "") || "output";
+    const safeName = rawName.replace(/[^a-zA-Z0-9._-]/g, "_");
 
     return new Response(outBytes, {
       headers: {
         "Content-Type": OUTBOUND_MIMES[outFormat] ?? "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${baseName}.${outFormat}"`,
+        "Content-Disposition": `attachment; filename="${safeName}.${outFormat}"`,
       },
     });
   } catch (err: any) {
