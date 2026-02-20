@@ -148,9 +148,17 @@ function parseArgs(argv: string[]) {
       chunks = true;
     } else if (arg.startsWith("--chunk-size=")) {
       chunkSize = parseInt(arg.split("=")[1], 10);
+      if (isNaN(chunkSize) || chunkSize <= 0) {
+        console.error("✗ --chunk-size must be a positive number.");
+        process.exit(1);
+      }
       chunks = true;
     } else if (arg === "--chunk-size") {
       chunkSize = parseInt(args[++i], 10);
+      if (isNaN(chunkSize) || chunkSize <= 0) {
+        console.error("✗ --chunk-size must be a positive number.");
+        process.exit(1);
+      }
       chunks = true;
     } else if (arg === "-h" || arg === "--help") {
       printHelp();
