@@ -1,5 +1,8 @@
 import { convertBytes, convertHtmlToMarkdown, isImageMime } from "./convert";
 import { getTokenStats, checkLLMFit, formatLLMFit } from "./tokens";
+import { safeFetchBytes } from "./url-safe";
+
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 
 const MIME_MAP: Record<string, string> = {
   pdf: "application/pdf",
@@ -96,15 +99,22 @@ async function handleConvertUrl(req: Request): Promise<Response> {
     return Response.json({ error: "Missing 'url' field." }, { status: 400 });
   }
 
+  let bytes: Uint8Array;
+  let contentType: string;
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      return Response.json({ error: `Fetch failed: ${res.status} ${res.statusText}` }, { status: 502 });
+    const result = await safeFetchBytes(url);
+    bytes = result.bytes;
+    contentType = result.contentType;
+  } catch (err: any) {
+    const msg = err.message ?? String(err);
+    // SSRF validation errors → 400, upstream fetch failures → 502
+    if (msg.includes("Blocked") || msg.includes("Invalid URL") || msg.includes("Blocked URL scheme")) {
+      return Response.json({ error: msg }, { status: 400 });
     }
+    return Response.json({ error: msg }, { status: 502 });
+  }
 
-    const contentType = res.headers.get("content-type") ?? "";
-    const bytes = new Uint8Array(await res.arrayBuffer());
-
+  try {
     let content: string;
     let mime = contentType.split(";")[0].trim();
 
@@ -167,44 +177,34 @@ function handleFormats(): Response {
   return Response.json({ formats: SUPPORTED_FORMATS });
 }
 
-function cors(res: Response): Response {
-  res.headers.set("Access-Control-Allow-Origin", "*");
-  res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  return res;
-}
-
 export function startServer(port = 3000): { stop: () => void } {
   const server = Bun.serve({
     port,
+    maxRequestBodySize: MAX_UPLOAD_BYTES,
     async fetch(req) {
       const url = new URL(req.url);
 
-      if (req.method === "OPTIONS") {
-        return cors(new Response(null, { status: 204 }));
-      }
-
       if (url.pathname === "/" && req.method === "GET") {
-        return cors(new Response(HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
+        return new Response(HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       if (url.pathname === "/convert" && req.method === "POST") {
-        return cors(await handleConvert(req));
+        return await handleConvert(req);
       }
 
       if (url.pathname === "/convert/url" && req.method === "POST") {
-        return cors(await handleConvertUrl(req));
+        return await handleConvertUrl(req);
       }
 
       if (url.pathname === "/convert/clipboard" && req.method === "POST") {
-        return cors(await handleConvertClipboard(req));
+        return await handleConvertClipboard(req);
       }
 
       if (url.pathname === "/formats" && req.method === "GET") {
-        return cors(handleFormats());
+        return handleFormats();
       }
 
-      return cors(Response.json({ error: "Not found" }, { status: 404 }));
+      return Response.json({ error: "Not found" }, { status: 404 });
     },
   });
 
@@ -489,15 +489,24 @@ function showResult(data) {
   spinner.classList.remove('visible');
   currentContent = data.content;
 
-  // Stats
-  let html = '<span class="stat-pill">' + data.words.toLocaleString() + ' words</span>';
-  html += '<span class="stat-pill">~' + data.tokens.toLocaleString() + ' tokens</span>';
+  // Stats — DOM methods instead of innerHTML to avoid XSS
+  stats.textContent = '';
+  var wp = document.createElement('span');
+  wp.className = 'stat-pill';
+  wp.textContent = data.words.toLocaleString() + ' words';
+  stats.appendChild(wp);
+  var tp = document.createElement('span');
+  tp.className = 'stat-pill';
+  tp.textContent = '~' + data.tokens.toLocaleString() + ' tokens';
+  stats.appendChild(tp);
   if (data.fits) {
-    html += data.fits.map(f =>
-      '<span class="' + (f.fits ? 'fit-yes' : 'fit-no') + '">' + f.name + ' ' + (f.fits ? '\\u2713' : '\\u2717') + '</span>'
-    ).join('  ');
+    data.fits.forEach(function(f) {
+      var s = document.createElement('span');
+      s.className = f.fits ? 'fit-yes' : 'fit-no';
+      s.textContent = f.name + ' ' + (f.fits ? '\\u2713' : '\\u2717');
+      stats.appendChild(s);
+    });
   }
-  stats.innerHTML = html;
   stats.classList.add('visible');
 
   outputText.textContent = data.content;
