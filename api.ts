@@ -1,6 +1,22 @@
 import { convertBytes, convertHtmlToMarkdown, isImageMime } from "./convert";
 import { getTokenStats, checkLLMFit, formatLLMFit } from "./tokens";
 import { safeFetchBytes } from "./url-safe";
+import { convertMarkdownTo, type OutboundFormat } from "./outbound";
+import {
+  loadConfig,
+  buildPandocArgs,
+  serializeConfig,
+  parseConfigFile,
+  findLocalConfig,
+  LOCAL_CONFIG_NAME,
+  GLOBAL_CONFIG_PATH,
+  type Config,
+  type TemplateConfig,
+} from "./config";
+import { tmpdir, homedir } from "os";
+import { unlinkSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { HTML } from "./ui";
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 
@@ -177,7 +193,201 @@ function handleFormats(): Response {
   return Response.json({ formats: SUPPORTED_FORMATS });
 }
 
-export function startServer(port = 3000): { stop: () => void } {
+// --- Outbound conversion ---
+
+const OUTBOUND_MIMES: Record<string, string> = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  html: "text/html",
+};
+
+async function handleConvertOutbound(req: Request): Promise<Response> {
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return Response.json({ error: "Invalid request. Send multipart/form-data." }, { status: 400 });
+  }
+
+  const file = formData.get("file") as File | null;
+  const format = formData.get("format") as string | null;
+  const templateName = (formData.get("template") as string | null) || undefined;
+
+  if (!file) return Response.json({ error: "No file uploaded." }, { status: 400 });
+  if (!format || !["docx", "pptx", "html"].includes(format)) {
+    return Response.json({ error: "Invalid format. Use docx, pptx, or html." }, { status: 400 });
+  }
+
+  const outFormat = format as OutboundFormat;
+  const tmpIn = join(tmpdir(), `docs2llm-in-${Date.now()}.md`);
+  let outPath: string | undefined;
+
+  try {
+    await Bun.write(tmpIn, new Uint8Array(await file.arrayBuffer()));
+
+    const config = loadConfig();
+    const pandocArgs = buildPandocArgs(outFormat, config, templateName);
+    outPath = await convertMarkdownTo(tmpIn, outFormat, tmpdir(), pandocArgs);
+
+    const outBytes = await Bun.file(outPath).arrayBuffer();
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "output";
+
+    return new Response(outBytes, {
+      headers: {
+        "Content-Type": OUTBOUND_MIMES[outFormat] ?? "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${baseName}.${outFormat}"`,
+      },
+    });
+  } catch (err: any) {
+    return Response.json({ error: err.message ?? String(err) }, { status: 500 });
+  } finally {
+    try { unlinkSync(tmpIn); } catch {}
+    if (outPath) try { unlinkSync(outPath); } catch {}
+  }
+}
+
+function handleGetTemplates(): Response {
+  const config = loadConfig();
+  return Response.json({ templates: config.templates ?? {} });
+}
+
+// --- Config ---
+
+function handleGetConfig(): Response {
+  const config = loadConfig();
+  return Response.json({ config, configPath: GLOBAL_CONFIG_PATH });
+}
+
+async function handlePutConfig(req: Request): Promise<Response> {
+  let body: Partial<Config>;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  const targetPath = GLOBAL_CONFIG_PATH;
+  const existing = parseConfigFile(targetPath);
+
+  const merged: Config = {
+    defaults: { ...existing.defaults, ...body.defaults },
+    pandoc: body.pandoc !== undefined ? { ...existing.pandoc, ...body.pandoc } : existing.pandoc,
+    templates: existing.templates,
+  };
+
+  // Clean up undefined values in defaults
+  if (merged.defaults) {
+    for (const [k, v] of Object.entries(merged.defaults)) {
+      if (v === undefined || v === null || v === "") delete (merged.defaults as any)[k];
+    }
+    if (Object.keys(merged.defaults).length === 0) delete merged.defaults;
+  }
+  // Clean up empty pandoc entries
+  if (merged.pandoc) {
+    for (const [k, v] of Object.entries(merged.pandoc)) {
+      if (!v || (Array.isArray(v) && v.length === 0)) delete merged.pandoc[k];
+    }
+    if (Object.keys(merged.pandoc).length === 0) delete merged.pandoc;
+  }
+
+  const dir = dirname(targetPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  await Bun.write(targetPath, serializeConfig(merged));
+
+  return Response.json({ ok: true, configPath: targetPath });
+}
+
+// --- Template CRUD ---
+
+async function handleCreateTemplate(req: Request): Promise<Response> {
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return Response.json({ error: "Invalid request. Send multipart/form-data." }, { status: 400 });
+  }
+
+  const name = (formData.get("name") as string)?.trim();
+  const format = formData.get("format") as string;
+  const description = (formData.get("description") as string)?.trim() || undefined;
+  const featuresRaw = formData.get("features") as string | null;
+  const referenceFile = formData.get("referenceFile") as File | null;
+
+  if (!name || !/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(name)) {
+    return Response.json({ error: "Invalid template name. Use alphanumeric and hyphens, starting with a letter or number." }, { status: 400 });
+  }
+  if (!format || !["docx", "pptx", "html"].includes(format)) {
+    return Response.json({ error: "Invalid format." }, { status: 400 });
+  }
+
+  const features: string[] = featuresRaw ? JSON.parse(featuresRaw) : [];
+  const pandocArgs: string[] = [];
+
+  if (features.includes("toc")) pandocArgs.push("--toc");
+  if (features.includes("standalone")) pandocArgs.push("--standalone");
+
+  // Handle reference file upload
+  if (referenceFile && referenceFile.size > 0) {
+    const templateDir = join(homedir(), ".config", "docs2llm", "templates");
+    if (!existsSync(templateDir)) mkdirSync(templateDir, { recursive: true });
+    const ext = referenceFile.name.split(".").pop() ?? format;
+    const refPath = join(templateDir, `${name}.${ext}`);
+    await Bun.write(refPath, new Uint8Array(await referenceFile.arrayBuffer()));
+    pandocArgs.push(`--reference-doc=${refPath}`);
+  }
+
+  const targetPath = findLocalConfig() ?? LOCAL_CONFIG_NAME;
+  const existing = parseConfigFile(targetPath);
+
+  const tplConfig: TemplateConfig = {
+    format: format as any,
+    ...(pandocArgs.length ? { pandocArgs } : {}),
+    ...(description ? { description } : {}),
+  };
+
+  existing.templates = { ...existing.templates, [name]: tplConfig };
+
+  const dir = dirname(targetPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  await Bun.write(targetPath, serializeConfig(existing));
+
+  return Response.json({ ok: true, name, template: tplConfig });
+}
+
+async function handleDeleteTemplate(name: string): Promise<Response> {
+  if (!name) return Response.json({ error: "Template name required." }, { status: 400 });
+
+  const targetPath = findLocalConfig() ?? LOCAL_CONFIG_NAME;
+  const existing = parseConfigFile(targetPath);
+
+  if (!existing.templates?.[name]) {
+    return Response.json({ error: `Template "${name}" not found.` }, { status: 404 });
+  }
+
+  // Check if there's a reference file to clean up
+  const tpl = existing.templates[name];
+  if (tpl.pandocArgs) {
+    for (const arg of tpl.pandocArgs) {
+      if (arg.startsWith("--reference-doc=")) {
+        const refPath = arg.slice("--reference-doc=".length);
+        try { unlinkSync(refPath); } catch {}
+      }
+    }
+  }
+
+  delete existing.templates[name];
+  if (existing.templates && Object.keys(existing.templates).length === 0) {
+    delete existing.templates;
+  }
+
+  const dir = dirname(targetPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  await Bun.write(targetPath, serializeConfig(existing));
+
+  return Response.json({ ok: true });
+}
+
+export function startServer(port = 3000): { port: number; stop: () => void } {
   const server = Bun.serve({
     port,
     maxRequestBodySize: MAX_UPLOAD_BYTES,
@@ -204,371 +414,41 @@ export function startServer(port = 3000): { stop: () => void } {
         return handleFormats();
       }
 
+      // Outbound conversion
+      if (url.pathname === "/convert/outbound" && req.method === "POST") {
+        return await handleConvertOutbound(req);
+      }
+
+      // Template list
+      if (url.pathname === "/config/templates" && req.method === "GET") {
+        return handleGetTemplates();
+      }
+
+      // Template CRUD
+      if (url.pathname === "/config/templates" && req.method === "POST") {
+        return await handleCreateTemplate(req);
+      }
+
+      if (url.pathname.startsWith("/config/templates/") && req.method === "DELETE") {
+        const tplName = decodeURIComponent(url.pathname.slice("/config/templates/".length));
+        return await handleDeleteTemplate(tplName);
+      }
+
+      // Config
+      if (url.pathname === "/config" && req.method === "GET") {
+        return handleGetConfig();
+      }
+
+      if (url.pathname === "/config" && req.method === "PUT") {
+        return await handlePutConfig(req);
+      }
+
       return Response.json({ error: "Not found" }, { status: 404 });
     },
   });
 
-  console.log(`docs2llm server running at http://localhost:${port}`);
-  return { stop: () => server.stop() };
+  const actualPort = server.port;
+  console.log(`docs2llm server running at http://localhost:${actualPort}`);
+  return { port: actualPort, stop: () => server.stop() };
 }
 
-// --- Inlined Web UI ---
-
-const HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>docs2llm</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0a; color: #e5e5e5; min-height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 1.5rem 2rem; border-bottom: 1px solid #262626; display: flex; align-items: center; gap: 1rem; }
-  header h1 { font-size: 1.25rem; font-weight: 600; }
-  header span { color: #737373; font-size: 0.875rem; }
-
-  /* Toolbar */
-  .toolbar { display: flex; gap: 0.5rem; padding: 0.75rem 2rem; border-bottom: 1px solid #262626; align-items: center; }
-  .toolbar .spacer { flex: 1; }
-  .toolbar button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.8125rem; cursor: pointer; white-space: nowrap; }
-  .toolbar button:hover:not(:disabled) { background: #333; }
-  .toolbar button:disabled { opacity: 0.35; cursor: default; }
-  .toolbar button.primary { background: #e5e5e5; color: #0a0a0a; border-color: #e5e5e5; }
-  .toolbar button.primary:hover:not(:disabled) { background: #d4d4d4; }
-  .toolbar button.primary:disabled { background: #e5e5e5; }
-
-  /* Stats */
-  .stats { padding: 0.75rem 2rem; border-bottom: 1px solid #262626; font-size: 0.8rem; color: #a3a3a3; display: none; }
-  .stats.visible { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center; }
-  .stat-pill { background: #171717; padding: 0.25rem 0.625rem; border-radius: 99px; }
-  .fit-yes { color: #4ade80; }
-  .fit-no { color: #f87171; }
-
-  /* Content area */
-  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .content { flex: 1; overflow: auto; }
-
-  /* Input view */
-  .input-view { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 2rem; }
-  .drop-zone { width: 100%; max-width: 600px; border: 2px dashed #262626; border-radius: 12px; padding: 3rem 2rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
-  .drop-zone:hover { border-color: #404040; }
-  .drop-zone.over { background: #171717; border-color: #525252; }
-  .drop-icon { font-size: 3rem; opacity: 0.3; }
-  .drop-text { color: #737373; text-align: center; line-height: 1.6; }
-  .drop-text a { color: #a3a3a3; text-decoration: underline; cursor: pointer; }
-
-  .separator { display: flex; align-items: center; gap: 1rem; width: 100%; max-width: 600px; margin: 1.5rem 0; color: #525252; font-size: 0.8rem; }
-  .separator::before, .separator::after { content: ""; flex: 1; border-top: 1px solid #262626; }
-
-  .url-bar { display: flex; gap: 0.5rem; width: 100%; max-width: 600px; }
-  .url-bar input { flex: 1; background: #171717; border: 1px solid #262626; border-radius: 6px; padding: 0.5rem 0.75rem; color: #e5e5e5; font-size: 0.875rem; outline: none; }
-  .url-bar input:focus { border-color: #525252; }
-  .url-bar button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.875rem; cursor: pointer; white-space: nowrap; }
-  .url-bar button:hover { background: #333; }
-
-  /* Output view */
-  .output-view { display: none; padding: 2rem; }
-  .output-view.visible { display: block; }
-  .output-view pre { white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8125rem; line-height: 1.7; color: #d4d4d4; }
-
-  /* Spinner */
-  .spinner { display: none; }
-  .spinner.visible { display: flex; align-items: center; gap: 0.5rem; color: #737373; font-size: 0.875rem; }
-  .spinner::before { content: ""; width: 1rem; height: 1rem; border: 2px solid #404040; border-top-color: #e5e5e5; border-radius: 50%; animation: spin 0.6s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Toast */
-  .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #262626; border: 1px solid #404040; border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.8125rem; color: #e5e5e5; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
-  .toast.show { opacity: 1; }
-
-  /* Source label */
-  .source-label { padding: 0.5rem 2rem; border-bottom: 1px solid #262626; font-size: 0.8125rem; color: #a3a3a3; display: none; align-items: center; gap: 0.5rem; }
-  .source-label.visible { display: flex; }
-  .source-label .name { color: #e5e5e5; }
-  .source-label .size { color: #737373; }
-
-  input[type=file] { display: none; }
-</style>
-</head>
-<body>
-
-<header>
-  <h1>docs2llm</h1>
-  <span>Convert documents to LLM-friendly text</span>
-</header>
-
-<div class="toolbar">
-  <button class="primary" id="btnCopy" disabled onclick="copyToClipboard()">Copy</button>
-  <button id="btnDownload" disabled onclick="downloadMd()">Download .md</button>
-  <button id="btnPaste" onclick="pasteFromClipboard()">Paste</button>
-  <div class="spacer"></div>
-  <button id="btnClear" disabled onclick="reset()">Clear</button>
-</div>
-
-<div class="source-label" id="sourceLabel">
-  <span class="name" id="sourceName"></span>
-  <span class="size" id="sourceSize"></span>
-</div>
-
-<div class="stats" id="stats"></div>
-
-<main>
-  <div class="content">
-    <div class="input-view" id="inputView">
-      <div class="drop-zone" id="dropZone" onclick="fileInput.click()">
-        <div class="drop-icon">&#8595;</div>
-        <div class="drop-text">
-          Drop a file here or <a>browse</a><br>
-          PDF, DOCX, PPTX, XLSX, images, and 70+ more formats
-        </div>
-        <div class="spinner" id="spinner">Converting&hellip;</div>
-      </div>
-
-      <div class="separator">or paste a URL</div>
-
-      <div class="url-bar">
-        <input type="text" id="urlInput" placeholder="https://example.com/page">
-        <button onclick="convertUrl()">Convert URL</button>
-      </div>
-    </div>
-
-    <div class="output-view" id="outputView">
-      <pre id="outputText"></pre>
-    </div>
-  </div>
-</main>
-
-<input type="file" id="fileInput">
-<div class="toast" id="toast"></div>
-
-<script>
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const spinner = document.getElementById('spinner');
-const inputView = document.getElementById('inputView');
-const outputView = document.getElementById('outputView');
-const outputText = document.getElementById('outputText');
-const stats = document.getElementById('stats');
-const sourceLabel = document.getElementById('sourceLabel');
-const btnCopy = document.getElementById('btnCopy');
-const btnDownload = document.getElementById('btnDownload');
-const btnClear = document.getElementById('btnClear');
-const toast = document.getElementById('toast');
-
-let currentContent = '';
-let currentFilename = 'output';
-
-// Drag and drop
-dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('over'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
-dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('over');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
-});
-fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
-});
-
-// Paste via Cmd+V / Ctrl+V
-document.addEventListener('paste', async (e) => {
-  // Don't intercept paste in input fields
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  e.preventDefault();
-  const items = e.clipboardData;
-  // 1. Check for files first
-  if (items.files.length > 0) {
-    uploadFile(items.files[0]);
-    return;
-  }
-  // 2. Check for HTML
-  const html = items.getData('text/html');
-  if (html) {
-    convertClipboard(html, null);
-    return;
-  }
-  // 3. Fall back to plain text
-  const text = items.getData('text/plain');
-  if (text) {
-    convertClipboard(null, text);
-  }
-});
-
-async function pasteFromClipboard() {
-  try {
-    const items = await navigator.clipboard.read();
-    // Check for files (image blobs)
-    for (const item of items) {
-      const fileType = item.types.find(t => t.startsWith('image/') || t === 'application/pdf');
-      if (fileType) {
-        const blob = await item.getType(fileType);
-        uploadFile(new File([blob], 'clipboard-file', { type: blob.type }));
-        return;
-      }
-    }
-    // Check for HTML
-    if (items[0] && items[0].types.includes('text/html')) {
-      const blob = await items[0].getType('text/html');
-      const html = await blob.text();
-      convertClipboard(html, null);
-      return;
-    }
-    // Fall back to plain text
-    const text = await navigator.clipboard.readText();
-    if (text) convertClipboard(null, text);
-  } catch (err) {
-    showToast('Clipboard access denied');
-  }
-}
-
-async function convertClipboard(html, text) {
-  showLoading('Clipboard', '');
-  currentFilename = 'clipboard';
-  try {
-    const res = await fetch('/convert/clipboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html, text }),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    showResult(data);
-  } catch (err) {
-    showError(err.message);
-  }
-}
-
-async function uploadFile(file) {
-  showLoading(file.name, formatBytes(file.size));
-  const form = new FormData();
-  form.append('file', file);
-  try {
-    const res = await fetch('/convert', { method: 'POST', body: form });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    currentFilename = file.name.replace(/\\.[^.]+$/, '');
-    showResult(data);
-  } catch (err) {
-    showError(err.message);
-  }
-}
-
-async function convertUrl() {
-  const url = document.getElementById('urlInput').value.trim();
-  if (!url) return;
-  showLoading(url, '');
-  try {
-    const res = await fetch('/convert/url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    currentFilename = new URL(url).hostname;
-    showResult(data);
-  } catch (err) {
-    showError(err.message);
-  }
-}
-
-function showLoading(name, size) {
-  document.getElementById('sourceName').textContent = name;
-  document.getElementById('sourceSize').textContent = size;
-  sourceLabel.classList.add('visible');
-  spinner.classList.add('visible');
-  dropZone.querySelector('.drop-icon').style.display = 'none';
-  dropZone.querySelector('.drop-text').style.display = 'none';
-  outputView.classList.remove('visible');
-  stats.classList.remove('visible');
-  setToolbarEnabled(false);
-}
-
-function showResult(data) {
-  spinner.classList.remove('visible');
-  currentContent = data.content;
-
-  // Stats — DOM methods instead of innerHTML to avoid XSS
-  stats.textContent = '';
-  var wp = document.createElement('span');
-  wp.className = 'stat-pill';
-  wp.textContent = data.words.toLocaleString() + ' words';
-  stats.appendChild(wp);
-  var tp = document.createElement('span');
-  tp.className = 'stat-pill';
-  tp.textContent = '~' + data.tokens.toLocaleString() + ' tokens';
-  stats.appendChild(tp);
-  if (data.fits) {
-    data.fits.forEach(function(f) {
-      var s = document.createElement('span');
-      s.className = f.fits ? 'fit-yes' : 'fit-no';
-      s.textContent = f.name + ' ' + (f.fits ? '\\u2713' : '\\u2717');
-      stats.appendChild(s);
-    });
-  }
-  stats.classList.add('visible');
-
-  outputText.textContent = data.content;
-  inputView.style.display = 'none';
-  outputView.classList.add('visible');
-  setToolbarEnabled(true);
-}
-
-function showError(msg) {
-  spinner.classList.remove('visible');
-  outputText.textContent = 'Error: ' + msg;
-  inputView.style.display = 'none';
-  outputView.classList.add('visible');
-  btnClear.disabled = false;
-}
-
-function reset() {
-  sourceLabel.classList.remove('visible');
-  stats.classList.remove('visible');
-  outputView.classList.remove('visible');
-  spinner.classList.remove('visible');
-  inputView.style.display = '';
-  dropZone.querySelector('.drop-icon').style.display = '';
-  dropZone.querySelector('.drop-text').style.display = '';
-  document.getElementById('urlInput').value = '';
-  fileInput.value = '';
-  currentContent = '';
-  setToolbarEnabled(false);
-}
-
-function setToolbarEnabled(enabled) {
-  btnCopy.disabled = !enabled;
-  btnDownload.disabled = !enabled;
-  btnClear.disabled = !enabled;
-}
-
-async function copyToClipboard() {
-  await navigator.clipboard.writeText(currentContent);
-  showToast('Copied to clipboard');
-}
-
-function downloadMd() {
-  const blob = new Blob([currentContent], { type: 'text/markdown' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = currentFilename + '.md';
-  a.click();
-  URL.revokeObjectURL(a.href);
-  showToast('Downloaded ' + a.download);
-}
-
-function showToast(msg) {
-  toast.textContent = msg;
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2000);
-}
-
-function formatBytes(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-  return (b / 1048576).toFixed(1) + ' MB';
-}
-</script>
-</body>
-</html>`;
