@@ -699,6 +699,8 @@ async function convertUrl(url: string, outputDir?: string, force?: boolean, useS
   }
 }
 
+const MAX_STDIN_BYTES = 100 * 1024 * 1024; // 100 MB
+
 async function convertStdin(
   format: OutputFormat,
   useStdout: boolean,
@@ -710,12 +712,17 @@ async function convertStdin(
 ) {
   const { convertBytes } = await import("./convert");
 
-  // Read all of stdin as bytes
+  // Read all of stdin as bytes with size limit
   const inputChunks: Uint8Array[] = [];
+  let totalLength = 0;
   for await (const chunk of Bun.stdin.stream()) {
+    totalLength += chunk.length;
+    if (totalLength > MAX_STDIN_BYTES) {
+      console.error(`✗ stdin input exceeds ${MAX_STDIN_BYTES / (1024 * 1024)} MB size limit.`);
+      process.exit(1);
+    }
     inputChunks.push(chunk);
   }
-  const totalLength = inputChunks.reduce((sum, c) => sum + c.length, 0);
   const data = new Uint8Array(totalLength);
   let offset = 0;
   for (const chunk of inputChunks) {
