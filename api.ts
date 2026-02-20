@@ -219,7 +219,7 @@ async function handleConvertOutbound(req: Request): Promise<Response> {
   }
 
   const outFormat = format as OutboundFormat;
-  const tmpIn = join(tmpdir(), `docs2llm-in-${Date.now()}.md`);
+  const tmpIn = join(tmpdir(), `docs2llm-in-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.md`);
   let outPath: string | undefined;
 
   try {
