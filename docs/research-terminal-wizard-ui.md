@@ -313,6 +313,36 @@ The modernized, modular rewrite of the classic Inquirer.js.
 
 ---
 
+### 9. Commander.js (v14)
+
+**Not interactive by itself, but the most downloaded CLI library on npm (~160M/week, ~27.8k stars).**
+
+Commander.js is strictly an argument parser and command router. However, two patterns make it relevant:
+
+- **`interactive-commander`** — A community extension that auto-generates interactive prompts for missing CLI options. When a flag isn't provided, it prompts the user interactively.
+- **v14 features** — Help groups (`.helpGroup()`, `.optionsGroup()`, `.commandsGroup()`) for organizing complex CLIs.
+
+**Verdict:** Use Commander for argument parsing alongside a prompt library. The `interactive-commander` pattern (auto-prompting for missing flags) is a UX pattern worth considering — it bridges the gap between flag-based and wizard-based CLI usage.
+
+---
+
+### 10. Cliffy (Deno/Node/Bun)
+
+**TypeScript-first, runtime-agnostic CLI toolkit.**
+
+| Metric | Value |
+|---|---|
+| Runtime support | Deno, Node.js, Bun |
+| TypeScript | Native (TypeScript-first) |
+| Maintenance | Active (2025) |
+| Distribution | jsr.io |
+
+Cliffy provides a comprehensive CLI toolkit: command framework (type-safe, auto-generated help, shell completions), flags/argument parser, ANSI utilities, interactive prompts, tables, keycode/keypress handling, and testing helpers. Can compile to native binaries via `deno compile`.
+
+**Verdict:** Worth watching as the Deno/Bun ecosystem matures. The most complete CLI toolkit for non-Node runtimes, and increasingly viable for Node.js as well.
+
+---
+
 ## Non-JS Libraries (For Inspiration)
 
 ### Charm Bubbletea (Go)
@@ -366,9 +396,11 @@ The gold standard for terminal UI frameworks. 10,000+ apps built with it.
 - Input validation traits
 - Theming via `Theme` trait
 
-**indicatif:** Progress bars and spinners. Multi-progress support for parallel operations.
+**indicatif:** Progress bars and spinners (~90M downloads). Thread-safe (`Sync + Send`), supports multi-progress bars for parallel operations, Rayon parallel iterator integration, smart terminal detection (hides bars when piped), customizable styles, human-readable ETA formatting.
 
-**Inspiration for docs2llm:** `FuzzySelect` (fuzzy search within a select prompt) is a pattern worth adopting. Also, the trait-based theming in dialoguer is more composable than most JS libraries.
+**cliclack:** A Rust port of `@clack/prompts`, providing the same beautiful wizard-style prompts in Rust. This demonstrates Clack's design influence across language ecosystems.
+
+**Inspiration for docs2llm:** `FuzzySelect` (fuzzy search within a select prompt) is a pattern worth adopting. The trait-based theming in dialoguer is more composable than most JS libraries. The Rust ecosystem's clean separation of prompts (dialoguer) from progress (indicatif) is a good architectural pattern — don't try to build one library that does everything.
 
 ---
 
@@ -398,14 +430,26 @@ The gold standard for terminal UI frameworks. 10,000+ apps built with it.
 9. **Idempotent retries** — If something fails, retrying should be safe
 10. **Config file output** — First-run wizard writes a config that users can edit later
 
+### Additional Best Practices
+
+11. **Never require a prompt** — Always provide flag/argument equivalents. If stdin is not an interactive terminal, skip prompting and require flags/args. Critical for CI/CD and automation.
+12. **Support `--yes`/`--force`** — Default to safe actions, but let users opt into accepting all defaults.
+13. **Respect config precedence** — flags > environment variables > config file > defaults.
+14. **Provide shell completions** — bash/zsh/fish/powershell completions reduce the need for interactive prompts entirely.
+15. **Smart error messages** — Include "did-you-mean" suggestions, proper exit codes, and actionable next steps.
+
 ### Accessibility Considerations
 
-- Support screen readers (Ink has basic ARIA support; most others don't)
-- Ensure keyboard-only navigation works well
-- Don't rely solely on color to convey information (use symbols/text too)
-- Respect terminal width (don't overflow narrow terminals)
-- Support `NO_COLOR` environment variable
-- Adapt for CI environments (no interactive prompts, structured output)
+- **Screen readers struggle with terminal output** — Man pages, tables, and long outputs are extremely difficult to navigate linearly. Spinners and cursor-moving animations can cause speech output loops.
+- **Support screen readers** — Ink has basic ARIA support; most others don't. GitHub CLI is leading the way with `gh a11y` for accessibility-optimized prompting.
+- **Ensure keyboard-only navigation works well**
+- **Don't rely solely on color** to convey information — use symbols/text too (checkmarks, X marks, arrows alongside colors)
+- **Respect terminal width** — Don't overflow narrow terminals
+- **Honor `NO_COLOR` and `TERM=dumb`** environment variables
+- **Provide `--no-animation` / `--simple` flags** to disable spinners, ASCII art, and redraw-based UIs
+- **Offer `--json` output** for programmatic consumption and screen reader compatibility
+- **Use box-drawing characters** (not ASCII art) for borders — accessible terminal emulators can interpret these
+- **Adapt for CI environments** — No interactive prompts, structured output
 
 ---
 
@@ -523,6 +567,7 @@ Key UX improvements to prioritize regardless of library choice:
 
 ## Sources
 
+### Libraries
 - [@clack/prompts on npm](https://www.npmjs.com/package/@clack/prompts)
 - [Clack releases / changelog](https://github.com/bombshell-dev/clack/releases)
 - [Clack docs at bomb.sh](https://bomb.sh/docs/clack/packages/prompts/)
@@ -534,11 +579,26 @@ Key UX improvements to prioritize regardless of library choice:
 - [Ink UI on GitHub](https://github.com/vadimdemedes/ink-ui)
 - [terminal-kit on GitHub](https://github.com/cronvel/terminal-kit)
 - [Blessed on GitHub](https://github.com/chjj/blessed)
+- [Commander.js on GitHub](https://github.com/tj/commander.js)
+- [Cliffy on GitHub](https://github.com/c4spar/cliffy)
+- [oclif on GitHub](https://github.com/oclif/oclif)
+
+### Non-JS Inspiration
 - [Charm Bubbletea on GitHub](https://github.com/charmbracelet/bubbletea)
+- [Charm.sh ecosystem](https://charm.sh/)
 - [Rich on GitHub](https://github.com/Textualize/rich)
 - [Textual on GitHub](https://github.com/Textualize/textual)
 - [dialoguer on docs.rs](https://docs.rs/dialoguer/latest/dialoguer/)
-- [oclif on GitHub](https://github.com/oclif/oclif)
+- [indicatif on docs.rs](https://docs.rs/indicatif/latest/indicatif/)
+- [cliclack (Rust port of Clack)](https://github.com/fadeevab/cliclack)
+- [Rust CLI prompts comparison](https://fadeevab.com/comparison-of-rust-cli-prompts/)
+
+### UX Research & Best Practices
 - [Top 8 CLI UX Patterns (Medium)](https://medium.com/@kaushalsinh73/top-8-cli-ux-patterns-users-will-brag-about-4427adb548b7)
 - [Wizard Design Pattern (UX Planet)](https://uxplanet.org/wizard-design-pattern-8c86e14f2a38)
 - [NN/g Wizards Definition](https://www.nngroup.com/articles/wizards/)
+- [CLI Guidelines (clig.dev)](https://clig.dev/)
+- [CLI UX Best Practices — Progress Displays (Evil Martians)](https://evilmartians.com/chronicles/cli-ux-best-practices-3-patterns-for-improving-progress-displays)
+- [10 Design Principles for Delightful CLIs (Atlassian)](https://www.atlassian.com/blog/it-teams/10-design-principles-for-delightful-clis)
+- [CLI Best Practices for Accessibility (Seirdy)](https://seirdy.one/posts/2022/06/10/cli-best-practices/)
+- [ACM CLI Accessibility Study](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445544)
