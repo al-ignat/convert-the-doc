@@ -1,4 +1,4 @@
-import { convertBytes, convertHtmlToMarkdown } from "./convert";
+import { convertBytes, convertHtmlToMarkdown, isImageMime } from "./convert";
 import { getTokenStats, checkLLMFit, formatLLMFit } from "./tokens";
 
 const MIME_MAP: Record<string, string> = {
@@ -56,9 +56,13 @@ async function handleConvert(req: Request): Promise<Response> {
   const ocrEnabled = formData.get("ocr") === "true" || formData.get("ocr") === "1";
   const ocrForce = formData.get("ocr") === "force";
   const ocrLang = formData.get("ocr_lang") as string | null;
+  // Auto-enable OCR for images
+  const isImage = isImageMime(mime);
   const ocrOpts = (ocrEnabled || ocrForce || ocrLang)
     ? { enabled: true, force: ocrForce, language: ocrLang ?? undefined }
-    : undefined;
+    : isImage
+      ? { enabled: true, force: true }
+      : undefined;
 
   try {
     const result = await convertBytes(bytes, mime, ocrOpts);
@@ -129,6 +133,36 @@ async function handleConvertUrl(req: Request): Promise<Response> {
   }
 }
 
+async function handleConvertClipboard(req: Request): Promise<Response> {
+  let body: { html?: string; text?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON body. Send {"html": "...", "text": "..."}.' }, { status: 400 });
+  }
+
+  const html = body.html?.trim();
+  const text = body.text?.trim();
+
+  if (!html && !text) {
+    return Response.json({ error: "Provide at least 'html' or 'text'." }, { status: 400 });
+  }
+
+  try {
+    const content = html ? await convertHtmlToMarkdown(html) : text!;
+    const stats = getTokenStats(content);
+    const fits = checkLLMFit(stats.tokens);
+    return Response.json({
+      content,
+      words: stats.words,
+      tokens: stats.tokens,
+      fits: fits.map((f) => ({ name: f.name, limit: f.limit, fits: f.fits })),
+    });
+  } catch (err: any) {
+    return Response.json({ error: err.message ?? String(err) }, { status: 500 });
+  }
+}
+
 function handleFormats(): Response {
   return Response.json({ formats: SUPPORTED_FORMATS });
 }
@@ -162,6 +196,10 @@ export function startServer(port = 3000): { stop: () => void } {
         return cors(await handleConvertUrl(req));
       }
 
+      if (url.pathname === "/convert/clipboard" && req.method === "POST") {
+        return cors(await handleConvertClipboard(req));
+      }
+
       if (url.pathname === "/formats" && req.method === "GET") {
         return cors(handleFormats());
       }
@@ -188,44 +226,50 @@ const HTML = `<!DOCTYPE html>
   header { padding: 1.5rem 2rem; border-bottom: 1px solid #262626; display: flex; align-items: center; gap: 1rem; }
   header h1 { font-size: 1.25rem; font-weight: 600; }
   header span { color: #737373; font-size: 0.875rem; }
-  main { flex: 1; display: flex; gap: 1px; background: #262626; }
-  .panel { background: #0a0a0a; flex: 1; display: flex; flex-direction: column; }
-  .panel-header { padding: 1rem 1.5rem; border-bottom: 1px solid #262626; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #737373; }
 
-  /* Drop zone */
-  .drop-zone { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 2rem; cursor: pointer; transition: background 0.15s; }
-  .drop-zone.over { background: #171717; }
-  .drop-zone.has-result { justify-content: flex-start; cursor: default; }
-  .drop-icon { font-size: 3rem; opacity: 0.3; }
-  .drop-text { color: #737373; text-align: center; line-height: 1.6; }
-  .drop-text a { color: #a3a3a3; text-decoration: underline; cursor: pointer; }
-
-  /* URL bar */
-  .url-bar { display: flex; gap: 0.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid #262626; }
-  .url-bar input { flex: 1; background: #171717; border: 1px solid #262626; border-radius: 6px; padding: 0.5rem 0.75rem; color: #e5e5e5; font-size: 0.875rem; outline: none; }
-  .url-bar input:focus { border-color: #525252; }
-  .url-bar button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.875rem; cursor: pointer; white-space: nowrap; }
-  .url-bar button:hover { background: #333; }
+  /* Toolbar */
+  .toolbar { display: flex; gap: 0.5rem; padding: 0.75rem 2rem; border-bottom: 1px solid #262626; align-items: center; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.8125rem; cursor: pointer; white-space: nowrap; }
+  .toolbar button:hover:not(:disabled) { background: #333; }
+  .toolbar button:disabled { opacity: 0.35; cursor: default; }
+  .toolbar button.primary { background: #e5e5e5; color: #0a0a0a; border-color: #e5e5e5; }
+  .toolbar button.primary:hover:not(:disabled) { background: #d4d4d4; }
+  .toolbar button.primary:disabled { background: #e5e5e5; }
 
   /* Stats */
-  .stats { padding: 0.75rem 1.5rem; border-bottom: 1px solid #262626; font-size: 0.8rem; color: #a3a3a3; display: none; }
+  .stats { padding: 0.75rem 2rem; border-bottom: 1px solid #262626; font-size: 0.8rem; color: #a3a3a3; display: none; }
   .stats.visible { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center; }
   .stat-pill { background: #171717; padding: 0.25rem 0.625rem; border-radius: 99px; }
   .fit-yes { color: #4ade80; }
   .fit-no { color: #f87171; }
 
-  /* Output */
-  .output { flex: 1; overflow: auto; padding: 1.5rem; display: none; }
-  .output.visible { display: block; }
-  .output pre { white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8125rem; line-height: 1.7; color: #d4d4d4; }
+  /* Content area */
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .content { flex: 1; overflow: auto; }
 
-  /* Actions */
-  .actions { padding: 1rem 1.5rem; border-top: 1px solid #262626; display: none; gap: 0.5rem; }
-  .actions.visible { display: flex; }
-  .actions button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.8125rem; cursor: pointer; }
-  .actions button:hover { background: #333; }
-  .actions button.primary { background: #e5e5e5; color: #0a0a0a; border-color: #e5e5e5; }
-  .actions button.primary:hover { background: #d4d4d4; }
+  /* Input view */
+  .input-view { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 2rem; }
+  .drop-zone { width: 100%; max-width: 600px; border: 2px dashed #262626; border-radius: 12px; padding: 3rem 2rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .drop-zone:hover { border-color: #404040; }
+  .drop-zone.over { background: #171717; border-color: #525252; }
+  .drop-icon { font-size: 3rem; opacity: 0.3; }
+  .drop-text { color: #737373; text-align: center; line-height: 1.6; }
+  .drop-text a { color: #a3a3a3; text-decoration: underline; cursor: pointer; }
+
+  .separator { display: flex; align-items: center; gap: 1rem; width: 100%; max-width: 600px; margin: 1.5rem 0; color: #525252; font-size: 0.8rem; }
+  .separator::before, .separator::after { content: ""; flex: 1; border-top: 1px solid #262626; }
+
+  .url-bar { display: flex; gap: 0.5rem; width: 100%; max-width: 600px; }
+  .url-bar input { flex: 1; background: #171717; border: 1px solid #262626; border-radius: 6px; padding: 0.5rem 0.75rem; color: #e5e5e5; font-size: 0.875rem; outline: none; }
+  .url-bar input:focus { border-color: #525252; }
+  .url-bar button { background: #262626; border: 1px solid #404040; border-radius: 6px; padding: 0.5rem 1rem; color: #e5e5e5; font-size: 0.875rem; cursor: pointer; white-space: nowrap; }
+  .url-bar button:hover { background: #333; }
+
+  /* Output view */
+  .output-view { display: none; padding: 2rem; }
+  .output-view.visible { display: block; }
+  .output-view pre { white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8125rem; line-height: 1.7; color: #d4d4d4; }
 
   /* Spinner */
   .spinner { display: none; }
@@ -237,12 +281,11 @@ const HTML = `<!DOCTYPE html>
   .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #262626; border: 1px solid #404040; border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.8125rem; color: #e5e5e5; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
   .toast.show { opacity: 1; }
 
-  /* File info */
-  .file-info { padding: 0.75rem 1.5rem; border-bottom: 1px solid #262626; font-size: 0.8125rem; color: #a3a3a3; display: none; align-items: center; gap: 0.5rem; }
-  .file-info.visible { display: flex; }
-  .file-info .name { color: #e5e5e5; }
-  .file-info button { background: none; border: none; color: #737373; cursor: pointer; font-size: 0.75rem; margin-left: auto; }
-  .file-info button:hover { color: #e5e5e5; }
+  /* Source label */
+  .source-label { padding: 0.5rem 2rem; border-bottom: 1px solid #262626; font-size: 0.8125rem; color: #a3a3a3; display: none; align-items: center; gap: 0.5rem; }
+  .source-label.visible { display: flex; }
+  .source-label .name { color: #e5e5e5; }
+  .source-label .size { color: #737373; }
 
   input[type=file] { display: none; }
 </style>
@@ -254,53 +297,62 @@ const HTML = `<!DOCTYPE html>
   <span>Convert documents to LLM-friendly text</span>
 </header>
 
+<div class="toolbar">
+  <button class="primary" id="btnCopy" disabled onclick="copyToClipboard()">Copy</button>
+  <button id="btnDownload" disabled onclick="downloadMd()">Download .md</button>
+  <button id="btnPaste" onclick="pasteFromClipboard()">Paste</button>
+  <div class="spacer"></div>
+  <button id="btnClear" disabled onclick="reset()">Clear</button>
+</div>
+
+<div class="source-label" id="sourceLabel">
+  <span class="name" id="sourceName"></span>
+  <span class="size" id="sourceSize"></span>
+</div>
+
+<div class="stats" id="stats"></div>
+
 <main>
-  <div class="panel">
-    <div class="url-bar">
-      <input type="text" id="urlInput" placeholder="Paste a URL to convert…">
-      <button onclick="convertUrl()">Convert URL</button>
-    </div>
-
-    <div class="file-info" id="fileInfo">
-      <span class="name" id="fileName"></span>
-      <span id="fileSize"></span>
-      <button onclick="reset()">Clear</button>
-    </div>
-
-    <div class="drop-zone" id="dropZone" onclick="fileInput.click()">
-      <div class="drop-icon">↓</div>
-      <div class="drop-text">
-        Drop a file here or <a>browse</a><br>
-        PDF, DOCX, PPTX, XLSX, images, and 70+ more formats
+  <div class="content">
+    <div class="input-view" id="inputView">
+      <div class="drop-zone" id="dropZone" onclick="fileInput.click()">
+        <div class="drop-icon">&#8595;</div>
+        <div class="drop-text">
+          Drop a file here or <a>browse</a><br>
+          PDF, DOCX, PPTX, XLSX, images, and 70+ more formats
+        </div>
+        <div class="spinner" id="spinner">Converting&hellip;</div>
       </div>
-      <div class="spinner" id="spinner">Converting…</div>
+
+      <div class="separator">or paste a URL</div>
+
+      <div class="url-bar">
+        <input type="text" id="urlInput" placeholder="https://example.com/page">
+        <button onclick="convertUrl()">Convert URL</button>
+      </div>
     </div>
 
-    <input type="file" id="fileInput">
-  </div>
-
-  <div class="panel">
-    <div class="panel-header">Output</div>
-    <div class="stats" id="stats"></div>
-    <div class="output" id="output"><pre id="outputText"></pre></div>
-    <div class="actions" id="actions">
-      <button class="primary" onclick="copyToClipboard()">Copy to clipboard</button>
-      <button onclick="downloadMd()">Download .md</button>
+    <div class="output-view" id="outputView">
+      <pre id="outputText"></pre>
     </div>
   </div>
 </main>
 
+<input type="file" id="fileInput">
 <div class="toast" id="toast"></div>
 
 <script>
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const spinner = document.getElementById('spinner');
-const output = document.getElementById('output');
+const inputView = document.getElementById('inputView');
+const outputView = document.getElementById('outputView');
 const outputText = document.getElementById('outputText');
 const stats = document.getElementById('stats');
-const actions = document.getElementById('actions');
-const fileInfo = document.getElementById('fileInfo');
+const sourceLabel = document.getElementById('sourceLabel');
+const btnCopy = document.getElementById('btnCopy');
+const btnDownload = document.getElementById('btnDownload');
+const btnClear = document.getElementById('btnClear');
 const toast = document.getElementById('toast');
 
 let currentContent = '';
@@ -318,6 +370,74 @@ dropZone.addEventListener('drop', (e) => {
 fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) uploadFile(fileInput.files[0]);
 });
+
+// Paste via Cmd+V / Ctrl+V
+document.addEventListener('paste', async (e) => {
+  // Don't intercept paste in input fields
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  e.preventDefault();
+  const items = e.clipboardData;
+  // 1. Check for files first
+  if (items.files.length > 0) {
+    uploadFile(items.files[0]);
+    return;
+  }
+  // 2. Check for HTML
+  const html = items.getData('text/html');
+  if (html) {
+    convertClipboard(html, null);
+    return;
+  }
+  // 3. Fall back to plain text
+  const text = items.getData('text/plain');
+  if (text) {
+    convertClipboard(null, text);
+  }
+});
+
+async function pasteFromClipboard() {
+  try {
+    const items = await navigator.clipboard.read();
+    // Check for files (image blobs)
+    for (const item of items) {
+      const fileType = item.types.find(t => t.startsWith('image/') || t === 'application/pdf');
+      if (fileType) {
+        const blob = await item.getType(fileType);
+        uploadFile(new File([blob], 'clipboard-file', { type: blob.type }));
+        return;
+      }
+    }
+    // Check for HTML
+    if (items[0] && items[0].types.includes('text/html')) {
+      const blob = await items[0].getType('text/html');
+      const html = await blob.text();
+      convertClipboard(html, null);
+      return;
+    }
+    // Fall back to plain text
+    const text = await navigator.clipboard.readText();
+    if (text) convertClipboard(null, text);
+  } catch (err) {
+    showToast('Clipboard access denied');
+  }
+}
+
+async function convertClipboard(html, text) {
+  showLoading('Clipboard', '');
+  currentFilename = 'clipboard';
+  try {
+    const res = await fetch('/convert/clipboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html, text }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    showResult(data);
+  } catch (err) {
+    showError(err.message);
+  }
+}
 
 async function uploadFile(file) {
   showLoading(file.name, formatBytes(file.size));
@@ -354,15 +474,15 @@ async function convertUrl() {
 }
 
 function showLoading(name, size) {
-  fileInfo.querySelector('.name').textContent = name;
-  document.getElementById('fileSize').textContent = size;
-  fileInfo.classList.add('visible');
+  document.getElementById('sourceName').textContent = name;
+  document.getElementById('sourceSize').textContent = size;
+  sourceLabel.classList.add('visible');
   spinner.classList.add('visible');
   dropZone.querySelector('.drop-icon').style.display = 'none';
   dropZone.querySelector('.drop-text').style.display = 'none';
-  output.classList.remove('visible');
+  outputView.classList.remove('visible');
   stats.classList.remove('visible');
-  actions.classList.remove('visible');
+  setToolbarEnabled(false);
 }
 
 function showResult(data) {
@@ -374,34 +494,44 @@ function showResult(data) {
   html += '<span class="stat-pill">~' + data.tokens.toLocaleString() + ' tokens</span>';
   if (data.fits) {
     html += data.fits.map(f =>
-      '<span class="' + (f.fits ? 'fit-yes' : 'fit-no') + '">' + f.name + ' ' + (f.fits ? '✓' : '✗') + '</span>'
+      '<span class="' + (f.fits ? 'fit-yes' : 'fit-no') + '">' + f.name + ' ' + (f.fits ? '\\u2713' : '\\u2717') + '</span>'
     ).join('  ');
   }
   stats.innerHTML = html;
   stats.classList.add('visible');
 
   outputText.textContent = data.content;
-  output.classList.add('visible');
-  actions.classList.add('visible');
+  inputView.style.display = 'none';
+  outputView.classList.add('visible');
+  setToolbarEnabled(true);
 }
 
 function showError(msg) {
   spinner.classList.remove('visible');
   outputText.textContent = 'Error: ' + msg;
-  output.classList.add('visible');
+  inputView.style.display = 'none';
+  outputView.classList.add('visible');
+  btnClear.disabled = false;
 }
 
 function reset() {
-  fileInfo.classList.remove('visible');
+  sourceLabel.classList.remove('visible');
   stats.classList.remove('visible');
-  output.classList.remove('visible');
-  actions.classList.remove('visible');
+  outputView.classList.remove('visible');
   spinner.classList.remove('visible');
+  inputView.style.display = '';
   dropZone.querySelector('.drop-icon').style.display = '';
   dropZone.querySelector('.drop-text').style.display = '';
   document.getElementById('urlInput').value = '';
   fileInput.value = '';
   currentContent = '';
+  setToolbarEnabled(false);
+}
+
+function setToolbarEnabled(enabled) {
+  btnCopy.disabled = !enabled;
+  btnDownload.disabled = !enabled;
+  btnClear.disabled = !enabled;
 }
 
 async function copyToClipboard() {

@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import { resolve, extname, dirname, join, basename } from "path";
 import { statSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { convertFile, looksLikeScannedPdf, type OutputFormat } from "./convert";
+import { convertFile, looksLikeScannedPdf, isImageFile, type OutputFormat } from "./convert";
 import { writeOutput } from "./output";
 import { buildPlan, ValidationError } from "./validate";
 import { scanForFiles, formatHint, type FileInfo } from "./scan";
@@ -427,10 +427,11 @@ async function convert(
       finalOutputPath = result.outputPath ?? plan.outputPath;
       s.stop(`${result.sourcePath} → ${finalOutputPath}`);
     } else {
-      let result = await convertFile(filePath, plan.format);
+      const autoOcr = isImageFile(filePath) ? { enabled: true, force: true } : undefined;
+      let result = await convertFile(filePath, plan.format, autoOcr ? { ocr: autoOcr } : undefined);
 
       // Auto-detect scanned PDFs and offer OCR
-      if (looksLikeScannedPdf(filePath, result.content)) {
+      if (!autoOcr && looksLikeScannedPdf(filePath, result.content)) {
         s.stop("Scanned document detected");
         const useOcr = await p.confirm({
           message: "This looks like a scanned document. Extract text with OCR?",
