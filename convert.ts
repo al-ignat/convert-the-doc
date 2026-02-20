@@ -35,6 +35,7 @@ interface ExtractionResult {
 }
 
 let extractFileFn: ((path: string, mime: any, config?: any) => Promise<ExtractionResult>) | null = null;
+let usingWasm = false;
 
 async function getExtractFile() {
   if (extractFileFn) return extractFileFn;
@@ -46,6 +47,7 @@ async function getExtractFile() {
     const wasm = await import("@kreuzberg/wasm");
     await wasm.initWasm();
     extractFileFn = wasm.extractFile;
+    usingWasm = true;
   }
   return extractFileFn!;
 }
@@ -63,8 +65,13 @@ async function getExtractBytes(): Promise<ExtractBytesFn> {
     const wasm = await import("@kreuzberg/wasm");
     await wasm.initWasm();
     extractBytesFn = wasm.extractBytes;
+    usingWasm = true;
   }
   return extractBytesFn!;
+}
+
+function getOcrBackend(): string {
+  return usingWasm ? "tesseract-wasm" : "tesseract";
 }
 
 function buildExtractionConfig(ocr?: OcrOptions): Record<string, unknown> {
@@ -75,7 +82,7 @@ function buildExtractionConfig(ocr?: OcrOptions): Record<string, unknown> {
 
   if (ocr?.enabled || ocr?.force) {
     config.ocr = {
-      enabled: true,
+      backend: getOcrBackend(),
       ...(ocr.language ? { language: ocr.language } : {}),
     };
   }
@@ -159,6 +166,21 @@ export function looksLikeScannedPdf(filePath: string, content: string): boolean 
   // Empty or near-empty content from a PDF suggests scanned pages
   const trimmed = content.trim();
   return trimmed.length < 50;
+}
+
+const IMAGE_MIMES = new Set([
+  "image/png", "image/jpeg", "image/tiff",
+  "image/bmp", "image/gif", "image/webp",
+]);
+
+export function isImageMime(mime: string): boolean {
+  return IMAGE_MIMES.has(mime);
+}
+
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif", ".webp"]);
+
+export function isImageFile(filePath: string): boolean {
+  return IMAGE_EXTS.has(extname(filePath).toLowerCase());
 }
 
 function formatOutput(

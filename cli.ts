@@ -4,7 +4,7 @@ import { resolve } from "path";
 import { statSync, mkdirSync, existsSync } from "fs";
 import { createInterface } from "readline";
 import { homedir } from "os";
-import { convertFile, looksLikeScannedPdf, type OutputFormat, type OcrOptions } from "./convert";
+import { convertFile, looksLikeScannedPdf, isImageFile, type OutputFormat, type OcrOptions } from "./convert";
 import { writeOutput } from "./output";
 import { buildPlan, ValidationError } from "./validate";
 import { runInteractive } from "./interactive";
@@ -453,10 +453,18 @@ async function convertSingleFile(
       });
       console.log(`✓ ${filePath} → ${result.outputPath}`);
     } else {
-      let result = await convertFile(filePath, plan.format, { ocr });
+      // Auto-enable OCR for images (no text layer to extract)
+      const effectiveOcr = (!ocr?.enabled && isImageFile(filePath))
+        ? { enabled: true, force: true }
+        : ocr;
+      if (effectiveOcr !== ocr && !useStdout) {
+        console.log("⚠ Image detected. Running OCR…");
+      }
+
+      let result = await convertFile(filePath, plan.format, { ocr: effectiveOcr });
 
       // Auto-detect scanned PDFs
-      if (!ocr?.enabled && looksLikeScannedPdf(filePath, result.content)) {
+      if (!effectiveOcr?.enabled && looksLikeScannedPdf(filePath, result.content)) {
         if (!useStdout) console.log("⚠ This looks like a scanned document. Retrying with OCR…");
         result = await convertFile(filePath, plan.format, { ocr: { enabled: true, force: true } });
       }
@@ -619,8 +627,11 @@ async function convertFolder(
           });
           console.log(`✓ ${file} → ${result.outputPath}`);
         } else {
-          let result = await convertFile(file, plan.format, { ocr });
-          if (!ocr?.enabled && looksLikeScannedPdf(file, result.content)) {
+          const batchOcr = (!ocr?.enabled && isImageFile(file))
+            ? { enabled: true, force: true }
+            : ocr;
+          let result = await convertFile(file, plan.format, { ocr: batchOcr });
+          if (!batchOcr?.enabled && looksLikeScannedPdf(file, result.content)) {
             console.log(`⚠ ${file}: scanned document detected, retrying with OCR…`);
             result = await convertFile(file, plan.format, { ocr: { enabled: true, force: true } });
           }
