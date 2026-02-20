@@ -15,7 +15,7 @@ import {
 } from "./config";
 import { tmpdir, homedir } from "os";
 import { unlinkSync, existsSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { HTML } from "./ui";
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
@@ -365,13 +365,17 @@ async function handleDeleteTemplate(name: string): Promise<Response> {
     return Response.json({ error: `Template "${name}" not found.` }, { status: 404 });
   }
 
-  // Check if there's a reference file to clean up
+  // Clean up reference files — only delete if within the expected template directory
   const tpl = existing.templates[name];
+  const templateDir = join(homedir(), ".config", "docs2llm", "templates");
   if (tpl.pandocArgs) {
     for (const arg of tpl.pandocArgs) {
       if (arg.startsWith("--reference-doc=")) {
         const refPath = arg.slice("--reference-doc=".length);
-        try { unlinkSync(refPath); } catch {}
+        const resolved = resolve(refPath);
+        if (resolved.startsWith(templateDir + "/")) {
+          try { unlinkSync(resolved); } catch {}
+        }
       }
     }
   }
