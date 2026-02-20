@@ -173,18 +173,18 @@ Output format:
 
 ### Web UI
 
-Launch a local web interface with drag-and-drop conversion:
+Launch a local web interface:
 
 ```bash
 docs2llm open
 ```
 
-Opens `http://localhost:3000` in your browser. Features:
+Opens in your browser (port 3000, or next available). Features:
 
-- Drag and drop any file to convert
-- Paste a URL to convert web pages
-- Markdown preview with copy-to-clipboard
-- Token count and LLM fit indicator
+- **Inbound**: drag and drop any file, paste a URL, or Cmd+V from clipboard — converts to Markdown
+- **Outbound**: drop a `.md` file to convert it to Word, PowerPoint, or HTML (with template support)
+- **Settings**: gear icon opens a config panel — set default format, Pandoc args, manage templates
+- Copy to clipboard, download `.md`, token count and LLM fit indicator
 - Dark theme
 
 ### MCP Server (Claude Desktop / Cursor)

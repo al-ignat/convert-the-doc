@@ -289,9 +289,13 @@ async function main() {
     return;
   }
   if (command === "open") {
-    const port = 3000;
-    startServer(port);
-    const url = `http://localhost:${port}`;
+    let server;
+    try {
+      server = startServer(3000);
+    } catch {
+      server = startServer(0);
+    }
+    const url = `http://localhost:${server.port}`;
     if (process.platform === "darwin") {
       Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
     } else if (process.platform === "win32") {
