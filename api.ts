@@ -321,7 +321,8 @@ async function handleCreateTemplate(req: Request): Promise<Response> {
     return Response.json({ error: "Invalid format." }, { status: 400 });
   }
 
-  const features: string[] = featuresRaw ? JSON.parse(featuresRaw) : [];
+  const parsed = featuresRaw ? JSON.parse(featuresRaw) : [];
+  const features: string[] = Array.isArray(parsed) ? parsed.filter((f: unknown) => typeof f === "string") : [];
   const pandocArgs: string[] = [];
 
   if (features.includes("toc")) pandocArgs.push("--toc");
